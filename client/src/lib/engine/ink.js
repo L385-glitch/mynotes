@@ -260,3 +260,192 @@ export function eraseBrush(strokes, x, y, r) {
   }
   return out;
 }
+
+// ---- Auto shape correction (task 5) -----------------------------------------
+// When the pen is held still at the end of a stroke, the live stroke is snapped
+// to the nearest of: straight line, circle, square, triangle. Returns a new
+// points array, or null when the stroke doesn't clearly match a shape.
+
+function rdp(points, eps) {
+  const n = points.length;
+  if (n < 3) return points.slice();
+  const keep = new Array(n).fill(false);
+  keep[0] = true;
+  keep[n - 1] = true;
+  const stack = [[0, n - 1]];
+  while (stack.length) {
+    const [s, e] = stack.pop();
+    let maxD = -1;
+    let idx = -1;
+    for (let i = s + 1; i < e; i++) {
+      const d = distToSeg(points[i][0], points[i][1], points[s], points[e]);
+      if (d > maxD) {
+        maxD = d;
+        idx = i;
+      }
+    }
+    if (maxD > eps && idx !== -1) {
+      keep[idx] = true;
+      stack.push([s, idx], [idx, e]);
+    }
+  }
+  return points.filter((_, i) => keep[i]);
+}
+
+function lineDeviation(points) {
+  const a = points[0];
+  const b = points[points.length - 1];
+  let maxD = 0;
+  for (const p of points) maxD = Math.max(maxD, distToSeg(p[0], p[1], a, b));
+  return maxD;
+}
+
+function snapLine(points) {
+  const a = points[0];
+  const b = points[points.length - 1];
+  const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+  const steps = Math.max(2, Math.round(len / 6));
+  const out = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, 1]);
+  }
+  return out;
+}
+
+function makeCircle(points) {
+  let cx = 0;
+  let cy = 0;
+  for (const p of points) {
+    cx += p[0];
+    cy += p[1];
+  }
+  cx /= points.length;
+  cy /= points.length;
+  let r = 0;
+  for (const p of points) r += Math.hypot(p[0] - cx, p[1] - cy);
+  r /= points.length;
+  const a0 = Math.atan2(points[0][1] - cy, points[0][0] - cx);
+  const steps = 72;
+  const out = [];
+  for (let i = 0; i <= steps; i++) {
+    const a = a0 + (i / steps) * Math.PI * 2;
+    out.push([cx + r * Math.cos(a), cy + r * Math.sin(a), 1]);
+  }
+  return out;
+}
+
+function polyPoints(corners, close) {
+  const out = [];
+  const seq = close ? [...corners, corners[0]] : corners;
+  for (let i = 0; i < seq.length - 1; i++) {
+    const a = seq[i];
+    const b = seq[i + 1];
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    const steps = Math.max(2, Math.round(len / 6));
+    const last = i === seq.length - 2;
+    for (let s = 0; s <= (last ? steps : steps - 1); s++) {
+      const t = s / steps;
+      out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, 1]);
+    }
+  }
+  return out;
+}
+
+function makeSquare(points) {
+  let minx = Infinity;
+  let miny = Infinity;
+  let maxx = -Infinity;
+  let maxy = -Infinity;
+  for (const p of points) {
+    if (p[0] < minx) minx = p[0];
+    if (p[0] > maxx) maxx = p[0];
+    if (p[1] < miny) miny = p[1];
+    if (p[1] > maxy) maxy = p[1];
+  }
+  return polyPoints(
+    [
+      [minx, miny],
+      [maxx, miny],
+      [maxx, maxy],
+      [minx, maxy],
+    ],
+    true,
+  );
+}
+
+function makeTriangle(points) {
+  // Pick the 3 points forming the largest-area triangle (sampled for speed).
+  const n = points.length;
+  const step = Math.max(1, Math.floor(n / 48));
+  const idx = [];
+  for (let i = 0; i < n; i += step) idx.push(i);
+  idx.push(n - 1);
+  let best = null;
+  let bestA = -1;
+  for (let i = 0; i < idx.length; i++)
+    for (let j = i + 1; j < idx.length; j++)
+      for (let k = j + 1; k < idx.length; k++) {
+        const a = points[idx[i]];
+        const b = points[idx[j]];
+        const c = points[idx[k]];
+        const area =
+          Math.abs((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])) / 2;
+        if (area > bestA) {
+          bestA = area;
+          best = [a, b, c];
+        }
+      }
+  if (!best) return null;
+  return polyPoints(best, true);
+}
+
+export function correctStrokePoints(points) {
+  if (!points || points.length < 4) return null;
+  const first = points[0];
+  const last = points[points.length - 1];
+  let minx = Infinity;
+  let miny = Infinity;
+  let maxx = -Infinity;
+  let maxy = -Infinity;
+  for (const p of points) {
+    if (p[0] < minx) minx = p[0];
+    if (p[0] > maxx) maxx = p[0];
+    if (p[1] < miny) miny = p[1];
+    if (p[1] > maxy) maxy = p[1];
+  }
+  const diag = Math.hypot(maxx - minx, maxy - miny) || 1;
+  const closure = Math.hypot(first[0] - last[0], first[1] - last[1]);
+  const isClosed = closure < diag * 0.3;
+
+  if (!isClosed) {
+    // Open stroke: only correct to a line when it is clearly straight.
+    if (lineDeviation(points) < diag * 0.08) return snapLine(points);
+    return null;
+  }
+
+  // Closed loop: decide circle vs polygon from radius spread + corner count.
+  let cx = 0;
+  let cy = 0;
+  for (const p of points) {
+    cx += p[0];
+    cy += p[1];
+  }
+  cx /= points.length;
+  cy /= points.length;
+  let r = 0;
+  for (const p of points) r += Math.hypot(p[0] - cx, p[1] - cy);
+  r /= points.length;
+  let varr = 0;
+  for (const p of points) {
+    const d = Math.hypot(p[0] - cx, p[1] - cy) - r;
+    varr += d * d;
+  }
+  const cv = Math.sqrt(varr / points.length) / (r || 1);
+  if (cv < 0.18) return makeCircle(points);
+
+  const closed = [...points, first];
+  const corners = rdp(closed, diag * 0.04).length - 1;
+  if (corners <= 3) return makeTriangle(points);
+  return makeSquare(points);
+}

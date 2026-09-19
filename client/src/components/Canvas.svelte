@@ -1,9 +1,24 @@
 <script>
   import { onMount, tick } from 'svelte';
-  import { drawStroke, drawTextItem, backgroundCanvas, strokeNear, textBounds, textAt, eraseBrush, uid } from '../lib/engine/ink.js';
+  import { drawStroke, drawTextItem, backgroundCanvas, strokeNear, textBounds, textAt, eraseBrush, uid, correctStrokePoints } from '../lib/engine/ink.js';
   import { renderPdfPage } from '../lib/pdf.js';
 
-  let { page, tool = 'pen', color = '#1f2937', size = 3, eraserMode = 'brush', dark = false, onContentChange, onZoomChange, register } = $props();
+  // Renders a single page at a shared zoom level. Panning/zooming are handled by
+  // the parent (the editor scrolls a vertical stack of these sheets); this
+  // component only draws its page and captures ink/text/eraser input.
+  let {
+    page,
+    tool = 'pen',
+    color = '#1f2937',
+    size = 3,
+    eraserMode = 'brush',
+    dark = false,
+    zoom = 1,
+    onContentChange,
+    onActive,
+    onRegister,
+    onZoomRequest,
+  } = $props();
 
   let containerEl = $state(null);
   let canvasEl = $state(null);
@@ -18,7 +33,6 @@
   let selected = $state(null);
   let eraserPos = null;
 
-  let view = $state({ scale: 1, tx: 0, ty: 0 });
   let dpr = 1;
   let ready = false;
 
@@ -29,13 +43,13 @@
   const undoStack = [];
   const redoStack = [];
   let currentPageId = null;
-  let lastFitKey = null;
-  let spaceDown = false;
   let saveTimer = null;
   let dirty = false;
+  let holdTimer = null;
 
   $effect(() => {
     const p = page;
+    clearHoldTimer();
     if (!p) {
       if (editing) commitEdit();
       if (currentPageId != null) flushSave(currentPageId);
@@ -67,14 +81,8 @@
     redoStack.length = 0;
     ensureContentCanvas();
     renderContent();
+    resize();
     requestDraw();
-    // Keep zoom/pan when the new page has the same size; only re-fit when the
-    // page size actually changes (e.g. A4 -> PDF page).
-    const key = `${p.width}x${p.height}`;
-    if (key !== lastFitKey) {
-      lastFitKey = key;
-      fitView();
-    }
     if (p.background === 'pdf' && p.pdfId != null) {
       renderPdfPage(p.pdfId, (p.pdfPage ?? 0) + 1, RES)
         .then((c) => {
@@ -108,6 +116,13 @@
       selected = null;
       if (editing) commitEdit();
     }
+  });
+
+  // Re-size the backing canvas whenever the shared zoom changes.
+  $effect(() => {
+    void zoom;
+    resize();
+    requestDraw();
   });
 
   function ensureContentCanvas() {
@@ -161,12 +176,12 @@
     const bg = getComputedStyle(document.documentElement).getPropertyValue('--canvas-bg').trim() || '#e9e6df';
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, W, H);
-    const k = dpr * view.scale;
-    ctx.setTransform(k, 0, 0, k, dpr * view.tx, dpr * view.ty);
+    const k = dpr * zoom;
+    ctx.setTransform(k, 0, 0, k, 0, 0);
     ctx.save();
     ctx.shadowColor = 'rgba(0,0,0,0.28)';
-    ctx.shadowBlur = 24 / view.scale;
-    ctx.shadowOffsetY = 5 / view.scale;
+    ctx.shadowBlur = 24 / zoom;
+    ctx.shadowOffsetY = 5 / zoom;
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, page.width, page.height);
     ctx.restore();
@@ -175,8 +190,8 @@
     if (tool === 'eraser' && eraserPos) {
       ctx.save();
       ctx.strokeStyle = 'rgba(31,41,55,0.65)';
-      ctx.lineWidth = 1.5 / view.scale;
-      const r = 8 / view.scale + 4;
+      ctx.lineWidth = 1.5 / zoom;
+      const r = eraserRadius();
       ctx.beginPath();
       ctx.arc(eraserPos.x, eraserPos.y, r, 0, Math.PI * 2);
       ctx.stroke();
@@ -184,88 +199,66 @@
     }
   }
 
+  // Eraser footprint in page units, scaled by the brush size.
+  function eraserRadius() {
+    return size / zoom + 3;
+  }
+
+  // Size the backing canvas to the page at the current zoom (no pan offset).
   function resize() {
-    if (!containerEl || !canvasEl) return;
+    if (!canvasEl || !page) return;
     dpr = window.devicePixelRatio || 1;
-    const w = containerEl.clientWidth;
-    const h = containerEl.clientHeight;
-    if (w === 0 || h === 0) return;
+    const w = Math.max(1, Math.round(page.width * zoom));
+    const h = Math.max(1, Math.round(page.height * zoom));
     canvasEl.width = Math.round(w * dpr);
     canvasEl.height = Math.round(h * dpr);
     canvasEl.style.width = w + 'px';
     canvasEl.style.height = h + 'px';
-    clampView();
-    requestDraw();
-  }
-
-  // Keep the page centered horizontally (no horizontal scrolling) and clamp the
-  // vertical offset so the page can be scrolled up/down but never lost off-screen.
-  function clampView() {
-    if (!containerEl || !page) return;
-    const vw = containerEl.clientWidth;
-    const vh = containerEl.clientHeight;
-    const scale = view.scale;
-    const pageH = page.height * scale;
-    const tx = (vw - page.width * scale) / 2;
-    const ty = pageH <= vh ? (vh - pageH) / 2 : Math.min(0, Math.max(vh - pageH, view.ty));
-    view = { scale, tx, ty };
-  }
-
-  function fitView() {
-    if (!containerEl || !page) return;
-    const pad = 36;
-    const s = Math.min(
-      (containerEl.clientWidth - pad * 2) / page.width,
-      (containerEl.clientHeight - pad * 2) / page.height
-    );
-    const scale = Math.max(0.05, Math.min(s, 6));
-    view = { scale, tx: 0, ty: 0 };
-    clampView();
-    notifyZoom();
-    requestDraw();
-  }
-
-  function notifyZoom() {
-    onZoomChange?.(view.scale);
-  }
-
-  function zoomIn() {
-    if (!containerEl) return;
-    zoomAt(1.25, containerEl.clientWidth / 2, containerEl.clientHeight / 2);
-  }
-
-  function zoomOut() {
-    if (!containerEl) return;
-    zoomAt(0.8, containerEl.clientWidth / 2, containerEl.clientHeight / 2);
-  }
-
-  function zoomAt(factor, cx, cy) {
-    const s0 = view.scale;
-    const s1 = Math.max(0.05, Math.min(8, s0 * factor));
-    if (s1 === s0) return;
-    // Anchor the point under the cursor vertically; horizontal is re-centered.
-    const py = (cy - view.ty) / s0;
-    view = { scale: s1, tx: view.tx, ty: cy - py * s1 };
-    clampView();
-    notifyZoom();
     requestDraw();
   }
 
   function toPage(e) {
     const rect = canvasEl.getBoundingClientRect();
     return {
-      x: (e.clientX - rect.left - view.tx) / view.scale,
-      y: (e.clientY - rect.top - view.ty) / view.scale,
+      x: (e.clientX - rect.left) / zoom,
+      y: (e.clientY - rect.top) / zoom,
     };
+  }
+
+  // Auto shape correction: while the pen is down, any 2s without new points
+  // snaps the live stroke to the nearest line/circle/square/triangle.
+  function armHoldTimer() {
+    if (holdTimer) clearTimeout(holdTimer);
+    holdTimer = setTimeout(() => {
+      holdTimer = null;
+      correctLive();
+    }, 2000);
+  }
+
+  function clearHoldTimer() {
+    if (holdTimer) {
+      clearTimeout(holdTimer);
+      holdTimer = null;
+    }
+  }
+
+  function correctLive() {
+    if (!live || live.corrected || live.tool !== 'pen' || live.points.length < 4) return;
+    const pts = correctStrokePoints(live.points);
+    if (pts) {
+      live.points = pts;
+      live.corrected = true;
+      requestDraw();
+    }
   }
 
   function onPointerDown(e) {
     const isMouse = e.pointerType === 'mouse';
-    if (isMouse && e.button !== 0 && e.button !== 1) return;
-    if (isMouse && e.button === 1) e.preventDefault();
+    if (isMouse && e.button !== 0) return;
     if (editing) commitEdit();
     canvasEl.setPointerCapture(e.pointerId);
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    onActive?.(page?.id);
     if (pointers.size === 2) {
       if (live) {
         live = null;
@@ -276,16 +269,12 @@
       gesture = {
         type: 'pinch',
         d0: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)),
-        mid0: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
-        view0: { ...view },
+        zoom0: zoom,
       };
       return;
     }
     const p = toPage(e);
-    if ((isMouse && e.button === 1) || spaceDown || tool === 'select') {
-      gesture = { type: 'pan', startX: e.clientX, startY: e.clientY, view0: { ...view } };
-      canvasEl.classList.add('panning');
-    } else if (tool === 'text') {
+    if (tool === 'text') {
       // Cancel the pointerdown so the browser doesn't fire the compatibility
       // mousedown event — its default action would steal focus from the
       // freshly-focused text overlay and immediately blur (commit) it.
@@ -297,7 +286,7 @@
         const b = textBounds(hit);
         const hx = b.x + b.w;
         const hy = b.y + b.h;
-        if (Math.hypot(p.x - hx, p.y - hy) < 14 / view.scale) {
+        if (Math.hypot(p.x - hx, p.y - hy) < 14 / zoom) {
           // Bottom-right corner → resize (width + font size).
           selected = hit.id;
           gesture = { type: 'resize-text', id: hit.id, origW: hit.w || 320, origSize: hit.size, startPage: p, started: false };
@@ -318,6 +307,7 @@
       eraseAt(p.x, p.y);
       requestDraw();
     } else {
+      clearHoldTimer();
       live = {
         id: uid(),
         tool,
@@ -335,21 +325,7 @@
     if (gesture?.type === 'pinch' && pointers.size >= 2) {
       const [a, b] = [...pointers.values()];
       const d1 = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
-      const mid1 = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-      const v0 = gesture.view0;
-      const s1 = Math.max(0.05, Math.min(8, v0.scale * (d1 / gesture.d0)));
-      const py = (gesture.mid0.y - v0.ty) / v0.scale;
-      view = { scale: s1, tx: v0.tx, ty: mid1.y - py * s1 };
-      clampView();
-      notifyZoom();
-      requestDraw();
-      return;
-    }
-    if (gesture?.type === 'pan') {
-      // Vertical pan only — the page stays centered horizontally.
-      view = { scale: view.scale, tx: view.tx, ty: gesture.view0.ty + (e.clientY - gesture.startY) };
-      clampView();
-      requestDraw();
+      onZoomRequest?.(gesture.zoom0 * (d1 / gesture.d0));
       return;
     }
     if (gesture?.type === 'erase') {
@@ -369,8 +345,8 @@
       }
       const t = texts.find((o) => o.id === gesture.id);
       if (t) {
-        const nx = gesture.origX + dx / view.scale;
-        const ny = gesture.origY + dy / view.scale;
+        const nx = gesture.origX + dx / zoom;
+        const ny = gesture.origY + dy / zoom;
         texts = texts.map((o) => (o.id === t.id ? { ...t, x: nx, y: ny } : o));
         requestDraw();
       }
@@ -393,13 +369,18 @@
     }
     if (live) {
       const events = e.getCoalescedEvents?.() || [e];
+      let added = false;
       for (const ev of events) {
         const p = toPage(ev);
         const last = live.points[live.points.length - 1];
         if (Math.hypot(p.x - last[0], p.y - last[1]) < 0.4) continue;
         live.points.push([p.x, p.y, ev.pressure || 0.5]);
+        added = true;
       }
-      requestDraw();
+      if (added) {
+        if (live.tool === 'pen') armHoldTimer();
+        requestDraw();
+      }
     }
   }
 
@@ -409,10 +390,7 @@
       gesture = null;
       eraserPos = null;
       requestDraw();
-    }
-    if (gesture?.type === 'pan') {
-      gesture = null;
-      canvasEl.classList.remove('panning');
+      return;
     }
     if (gesture?.type === 'erase') {
       if (pointers.size === 0) {
@@ -434,6 +412,7 @@
       return;
     }
     if (live) {
+      clearHoldTimer();
       if (live.points.length > 0) {
         pushUndo();
         strokes = [...strokes, live];
@@ -445,22 +424,15 @@
   }
 
   function onWheel(e) {
-    e.preventDefault();
-    const rect = canvasEl.getBoundingClientRect();
-    const cx = e.clientX - rect.left;
-    const cy = e.clientY - rect.top;
     if (e.ctrlKey || e.metaKey) {
-      zoomAt(Math.exp(-e.deltaY * 0.01), cx, cy);
-    } else {
-      // Vertical scroll only — horizontal delta is ignored.
-      view = { ...view, ty: view.ty - e.deltaY };
-      clampView();
-      requestDraw();
+      e.preventDefault();
+      onZoomRequest?.(zoom * Math.exp(-e.deltaY * 0.01));
     }
+    // Non-ctrl wheel: let the parent scroll container handle it natively.
   }
 
   function eraseAt(x, y) {
-    const r = 8 / view.scale + 4;
+    const r = eraserRadius();
     if (eraserMode === 'line') {
       // Whole-line: touching any part of a stroke erases the entire stroke.
       const keep = [];
@@ -579,72 +551,29 @@
     return Promise.resolve(onContentChange?.(pid, { strokes, texts }));
   }
 
-  function onKeyDown(e) {
-    if (editing) {
-      if (e.key === 'Escape') commitEdit();
-      return;
-    }
-    if (e.code === 'Space' && !e.repeat) {
-      const t = e.target;
-      if (t === document.body || t === canvasEl) {
-        spaceDown = true;
-        canvasEl.classList.add('space-pan');
-        e.preventDefault();
-      }
-      return;
-    }
-    const mod = e.ctrlKey || e.metaKey;
-    if (mod && e.key.toLowerCase() === 'z') {
-      e.preventDefault();
-      if (e.shiftKey) redo();
-      else undo();
-    } else if (mod && e.key.toLowerCase() === 'y') {
-      e.preventDefault();
-      redo();
-    }
-  }
-
-  function onKeyUp(e) {
-    if (e.code === 'Space') {
-      spaceDown = false;
-      canvasEl?.classList.remove('space-pan');
-    }
-  }
-
-  function onBlur() {
-    spaceDown = false;
-    canvasEl?.classList.remove('space-pan');
-  }
-
   onMount(() => {
     ready = true;
     resize();
-    const ro = new ResizeObserver(() => resize());
-    if (containerEl) ro.observe(containerEl);
-    canvasEl.addEventListener('wheel', onWheel, { passive: false });
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
-    window.addEventListener('blur', onBlur);
+    canvasEl?.addEventListener('wheel', onWheel, { passive: false });
+    window.addEventListener('resize', resize);
     return () => {
-      ro.disconnect();
       canvasEl?.removeEventListener('wheel', onWheel);
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
-      window.removeEventListener('blur', onBlur);
+      window.removeEventListener('resize', resize);
+      clearHoldTimer();
       cancelSave();
       if (dirty && currentPageId != null) flushSave(currentPageId);
     };
   });
 
-  // Expose the imperative API to the parent (Svelte 5 components have no
-  // instance object, so bind:this can't be used for this).
+  // Expose this page's imperative API to the editor (keyed by page id).
   $effect(() => {
-    register?.({ undo, redo, zoomIn, zoomOut, fitView, flushSave, commitEdit });
+    const id = page?.id;
+    if (id != null) onRegister?.(id, { undo, redo, flushSave, commitEdit });
   });
 
   let editStyle = $derived(
     editing
-      ? `left:${editing.x * view.scale + view.tx}px;top:${editing.y * view.scale + view.ty}px;width:${editing.w * view.scale}px;height:${Math.max(48, editing.size * 2.7 * view.scale)}px;font-size:${editing.size * view.scale}px;line-height:${editing.size * 1.35 * view.scale}px;color:${editing.color};`
+      ? `left:${editing.x * zoom}px;top:${editing.y * zoom}px;width:${editing.w * zoom}px;height:${Math.max(48, editing.size * 2.7 * zoom)}px;font-size:${editing.size * zoom}px;line-height:${editing.size * 1.35 * zoom}px;color:${editing.color};`
       : ''
   );
 
@@ -655,15 +584,19 @@
     if (!t) return null;
     const b = textBounds(t);
     return {
-      left: b.x * view.scale + view.tx,
-      top: b.y * view.scale + view.ty,
-      width: b.w * view.scale,
-      height: b.h * view.scale,
+      left: b.x * zoom,
+      top: b.y * zoom,
+      width: b.w * zoom,
+      height: b.h * zoom,
     };
   });
 </script>
 
-<div class="relative h-full w-full overflow-hidden" bind:this={containerEl}>
+<div
+  class="relative shrink-0"
+  style="width:{page.width * zoom}px;height:{page.height * zoom}px"
+  bind:this={containerEl}
+>
   <canvas
     class="ink-canvas tool-{tool}"
     bind:this={canvasEl}

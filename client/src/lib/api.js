@@ -20,7 +20,7 @@ export const api = {
   // folders
   listFolders: () => req('GET', '/api/folders'),
   createFolder: (name, parentId = null) => req('POST', '/api/folders', { name, parentId }),
-  renameFolder: (id, name) => req('PATCH', `/api/folders/${id}`, { name }),
+  updateFolder: (id, patch) => req('PATCH', `/api/folders/${id}`, patch),
   deleteFolder: (id) => req('DELETE', `/api/folders/${id}`),
 
   // notebooks

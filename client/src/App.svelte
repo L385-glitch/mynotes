@@ -4,6 +4,7 @@
   import Editor from './components/Editor.svelte';
   import FileExplorer from './components/FileExplorer.svelte';
   import NotebookModal from './components/NotebookModal.svelte';
+  import FolderModal from './components/FolderModal.svelte';
   import Settings from './components/Settings.svelte';
   import { api } from './lib/api.js';
   import { getPageCount, getPageSize } from './lib/pdf.js';
@@ -16,10 +17,10 @@
   let currentFolderId = $state(null);
   let returnFolderId = $state(null);
   let pages = $state([]);
-  let page = $state(null);
   let activeTag = $state(null);
   let saveState = $state('saved');
   let modalNotebook = $state(null);
+  let modalFolder = $state(null);
   let sidebarOpen = $state(false);
   let importing = $state(false);
   let dark = $state(initialDark());
@@ -58,7 +59,6 @@
       await editorApi?.flush?.();
       selectedNotebookId = null;
       pages = [];
-      page = null;
     }
     sidebarOpen = false;
   }
@@ -68,61 +68,45 @@
     await editorApi?.flush?.();
     selectedNotebookId = null;
     pages = [];
-    page = null;
     currentFolderId = returnFolderId ?? null;
   }
 
+  // Load every page of a notebook WITH its content, so the editor can render
+  // the whole stack at once. The token guards against a stale response landing
+  // after the user has already navigated away.
+  async function loadFullPages(id, tok = navToken) {
+    const summaries = await api.listPages(id);
+    if (tok !== navToken) return [];
+    const full = await Promise.all(summaries.map((s) => api.getPage(s.id)));
+    if (tok !== navToken) return [];
+    return full;
+  }
+
   async function selectNotebook(id, targetPageId = null) {
-    if (id === selectedNotebookId) {
-      if (targetPageId) openPage(targetPageId);
-      return;
-    }
+    if (id === selectedNotebookId) return;
     const tok = ++navToken;
     selectedNotebookId = id;
     sidebarOpen = false;
-    // Persist the page we're leaving before its content is swapped out.
+    // Persist the notebook we're leaving before its pages are swapped out.
     await editorApi?.flush?.();
-    page = null;
-    const ps = await api.listPages(id);
-    if (tok !== navToken) return;
-    pages = ps;
-    const target = targetPageId ? ps.find((p) => p.id === targetPageId) : ps[0];
-    if (target) openPage(target.id, tok);
     const nb = notebooks.find((n) => n.id === id);
     returnFolderId = nb ? nb.folderId : null;
-  }
-
-  async function openPage(id, tok = navToken) {
-    const p = await api.getPage(id);
-    if (tok !== navToken) return;
-    page = p;
-    saveState = 'saved';
+    pages = await loadFullPages(id, tok);
   }
 
   async function handleContentChange(pageId, content) {
-    if (page?.id !== pageId) {
-      // Stale save for a page we already left — persist it silently.
-      await api.savePage(pageId, { content }).catch(() => {});
-      return;
-    }
     saveState = 'saving';
     try {
       await api.savePage(pageId, { content });
-      if (page?.id === pageId) saveState = 'saved';
+      saveState = 'saved';
     } catch {
-      // e.g. the page was deleted meanwhile — don't stick "Unsaved" on the new page
-      if (page?.id === pageId) saveState = 'unsaved';
+      saveState = 'unsaved';
     }
   }
 
   async function refreshPages() {
     if (!selectedNotebookId) return;
-    pages = await api.listPages(selectedNotebookId);
-  }
-
-  function patchPage(patch) {
-    if (!page) return;
-    page = { ...page, ...patch };
+    pages = await loadFullPages(selectedNotebookId);
   }
 
   async function newNotebook(folderId) {
@@ -191,8 +175,18 @@
     if (selectedNotebookId === id) {
       selectedNotebookId = null;
       pages = [];
-      page = null;
     }
+  }
+
+  async function onFolderSaved(f) {
+    folders = folders.map((o) => (o.id === f.id ? f : o));
+  }
+
+  async function onFolderDeleted(id) {
+    // Deleting a folder orphans its children (parent_id -> NULL) and removes
+    // its notebooks; a full refresh keeps the tree consistent.
+    if (currentFolderId === id) currentFolderId = null;
+    await refresh();
   }
 
   onMount(refresh);
@@ -229,12 +223,9 @@
         register={registerEditor}
         {notebook}
         {pages}
-        {page}
         {saveState}
-        onOpenPage={(id) => openPage(id)}
         onContentChange={handleContentChange}
         onPagesChanged={refreshPages}
-        onPagePatch={patchPage}
         onToggleSidebar={() => (sidebarOpen = true)}
         onBack={backToFolders}
         {dark}
@@ -255,6 +246,7 @@
         onImportPdf={importPdf}
         onOpenSettings={() => (settingsOpen = true)}
         onOpenNotebookModal={(nb) => (modalNotebook = nb)}
+        onOpenFolderModal={(f) => (modalFolder = f)}
       />
     {/if}
   </div>
@@ -268,6 +260,16 @@
       onClose={() => (modalNotebook = null)}
       onSaved={onModalSaved}
       onDeleted={onModalDeleted}
+    />
+  {/if}
+
+  {#if modalFolder}
+    <FolderModal
+      folder={modalFolder}
+      {folders}
+      onClose={() => (modalFolder = null)}
+      onSaved={onFolderSaved}
+      onDeleted={onFolderDeleted}
     />
   {/if}
 

@@ -14,6 +14,7 @@
     onImportPdf,
     onOpenSettings,
     onOpenNotebookModal,
+    onOpenFolderModal,
   } = $props();
 
   const I = {
@@ -144,15 +145,26 @@
     {:else}
       <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
         {#each subfolders as f (f.id)}
-          <button
-            class="group flex flex-col items-center gap-2 rounded-xl border border-transparent p-3 text-center hover:border-stone-200 hover:bg-stone-50"
-            onclick={() => onNavigateFolder(f.id)}
+          <div
+            class="group relative flex flex-col gap-2 rounded-xl border border-transparent p-3 text-center hover:border-stone-200 hover:bg-stone-50"
           >
-            <div class="flex h-16 w-full items-center justify-center rounded-lg bg-amber-50 text-amber-500">
-              <Icon d={I.folder} size={40} />
-            </div>
-            <span class="line-clamp-2 w-full text-sm font-medium text-stone-700">{f.name}</span>
-          </button>
+            <button
+              class="flex flex-1 flex-col items-center gap-2"
+              onclick={() => onNavigateFolder(f.id)}
+            >
+              <div class="flex h-16 w-full items-center justify-center rounded-lg bg-amber-50 text-amber-500">
+                <Icon d={I.folder} size={40} />
+              </div>
+              <span class="line-clamp-2 w-full text-sm font-medium text-stone-700">{f.name}</span>
+            </button>
+            <button
+              class="absolute right-2 top-2 rounded p-1 text-stone-400 opacity-0 hover:bg-stone-200 group-hover:opacity-100"
+              title="Folder settings"
+              onclick={() => onOpenFolderModal(f)}
+            >
+              ⋯
+            </button>
+          </div>
         {/each}
 
         {#each files as nb (nb.id)}
