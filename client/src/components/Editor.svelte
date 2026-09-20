@@ -102,6 +102,7 @@
   });
 
   const I = {
+    select: ['M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z'],
     pen: ['M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z'],
     highlighter: ['m9 11-6 6v3h9l3-3', 'm22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4'],
     eraser: ['m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21', 'M22 21H7', 'm5 11 9 9'],
@@ -123,6 +124,7 @@
   };
 
   const TOOLS = [
+    { id: 'select', icon: I.select, label: 'Select' },
     { id: 'pen', icon: I.pen, label: 'Pen' },
     { id: 'highlighter', icon: I.highlighter, label: 'Highlighter' },
     { id: 'eraser', icon: I.eraser, label: 'Eraser' },
@@ -141,6 +143,7 @@
   function setTool(t) {
     tool = t;
     bgOpen = false;
+    if (t === 'select') return;
     if (t === 'highlighter' && !HIGHLIGHTER_COLORS.includes(color)) color = HIGHLIGHTER_COLORS[0];
     if (t !== 'highlighter' && !PEN_COLORS.includes(color)) color = PEN_COLORS[0];
   }
@@ -229,35 +232,37 @@
       </div>
     {/if}
 
-    <div class="mx-1 h-6 w-px bg-stone-200"></div>
+    {#if tool !== 'select'}
+      <div class="mx-1 h-6 w-px bg-stone-200"></div>
 
-    <div class="flex items-center gap-1.5">
-      {#each palette as c (c)}
-        <button
-          class="h-5 w-5 rounded-full border {c === color ? 'border-[#4f7cff] ring-2 ring-[#4f7cff]/40' : 'border-stone-300'}"
-          style="background:{c}"
-          title={c}
-          onclick={() => (color = c)}
-        ></button>
-      {/each}
-    </div>
+      <div class="flex items-center gap-1.5">
+        {#each palette as c (c)}
+          <button
+            class="h-5 w-5 rounded-full border {c === color ? 'border-[#4f7cff] ring-2 ring-[#4f7cff]/40' : 'border-stone-300'}"
+            style="background:{c}"
+            title={c}
+            onclick={() => (color = c)}
+          ></button>
+        {/each}
+      </div>
 
-    <div class="mx-1 h-6 w-px bg-stone-200"></div>
+      <div class="mx-1 h-6 w-px bg-stone-200"></div>
 
-    <div class="flex items-center gap-2">
-      <span class="rounded-full bg-stone-700" style="width:{Math.min(20, size * 1.6)}px;height:{Math.min(20, size * 1.6)}px"></span>
-      <input
-        type="range"
-        min="1"
-        max="20"
-        step="0.5"
-        value={size}
-        oninput={(e) => (size = Number(e.target.value))}
-        class="h-1 w-24 accent-[#4f7cff]"
-        title="Brush size"
-      />
-      <span class="w-7 text-right text-xs text-stone-500">{size}</span>
-    </div>
+      <div class="flex items-center gap-2">
+        <span class="rounded-full bg-stone-700" style="width:{Math.min(20, size * 1.6)}px;height:{Math.min(20, size * 1.6)}px"></span>
+        <input
+          type="range"
+          min="1"
+          max="20"
+          step="0.5"
+          value={size}
+          oninput={(e) => (size = Number(e.target.value))}
+          class="h-1 w-24 accent-[#4f7cff]"
+          title="Brush size"
+        />
+        <span class="w-7 text-right text-xs text-stone-500">{size}</span>
+      </div>
+    {/if}
 
     <div class="mx-1 h-6 w-px bg-stone-200"></div>
 
