@@ -150,3 +150,17 @@ body {
   height: 8px;
   background: radial-gradient(circle, var(--accent) 1px, transparent 1.3px) 0 0 / 4px 4px;
 }
+
+/* Left/right border handles for resizing the text field's width. */
+.text-handle-edge {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 5px;
+  height: 22px;
+  background: var(--surface);
+  border: 1.5px solid var(--accent);
+  border-radius: 3px;
+}
+.text-handle-edge-left { left: -4px; }
+.text-handle-edge-right { right: -4px; }

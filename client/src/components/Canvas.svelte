@@ -365,19 +365,24 @@
       const hit = [...texts].reverse().find((t) => textAt(t, p.x, p.y));
       if (hit) {
         const b = textBounds(hit);
-        const hx = b.x + b.w;
-        const hy = b.y + b.h;
-        if (Math.hypot(p.x - hx, p.y - hy) < 14 / zoom) {
-          // Bottom-right corner → resize (width + font size).
-          selected = hit.id;
-          gesture = { type: 'resize-text', id: hit.id, origW: hit.w || 320, origSize: hit.size, startPage: p, started: false };
-        } else if (Math.hypot(p.x - b.x, p.y - b.y) < 14 / zoom) {
+        const edge = 14 / zoom;
+        const inVertRange = p.y >= b.y - edge && p.y <= b.y + b.h + edge;
+        // One-sided border zones so clicks inside the box still select/move.
+        const onRightEdge = p.x >= b.x + b.w - 2 && inVertRange;
+        const onLeftEdge = p.x <= b.x + 2 && inVertRange;
+        const cornerTL = Math.hypot(p.x - b.x, p.y - b.y) < edge;
+        selected = hit.id;
+        if (onRightEdge) {
+          // Right border → resize width (font size stays independent).
+          gesture = { type: 'resize-text', side: 'right', id: hit.id, origW: hit.w || 320, startPage: p, started: false };
+        } else if (cornerTL) {
           // Top-left corner → dedicated drag handle, moves immediately.
-          selected = hit.id;
           gesture = { type: 'maybe-move-text', id: hit.id, startX: e.clientX, startY: e.clientY, origX: hit.x, origY: hit.y, threshold: 0 };
+        } else if (onLeftEdge) {
+          // Left border → resize width, keeping the right edge anchored.
+          gesture = { type: 'resize-text', side: 'left', id: hit.id, origX: hit.x, origW: hit.w || 320, startPage: p, started: false };
         } else {
           // Body → select, and a potential drag-to-move.
-          selected = hit.id;
           gesture = { type: 'maybe-move-text', id: hit.id, startX: e.clientX, startY: e.clientY, origX: hit.x, origY: hit.y };
         }
       } else if (selected) {
@@ -478,9 +483,18 @@
           gesture = { ...gesture, started: true };
         }
         const p = toPage(e);
-        const w = Math.max(60, gesture.origW + (p.x - gesture.startPage.x));
-        const sz = Math.max(8, gesture.origSize + (p.y - gesture.startPage.y) * 0.25);
-        texts = texts.map((o) => (o.id === t.id ? { ...t, w, size: sz } : o));
+        const dx = p.x - gesture.startPage.x;
+        if (gesture.side === 'left') {
+          // Drag the left border: move x, keep the right edge anchored.
+          const right = gesture.origX + gesture.origW;
+          const nx = Math.max(0, Math.min(right - 60, gesture.origX + dx));
+          texts = texts.map((o) => (o.id === t.id ? { ...t, x: nx, w: right - nx } : o));
+        } else {
+          // Drag the right border / corner: only the width changes. The font
+          // size is independent (adjusted via the Text formatting row).
+          const w = Math.max(60, gesture.origW + dx);
+          texts = texts.map((o) => (o.id === t.id ? { ...t, w } : o));
+        }
         requestDraw();
       }
       return;
@@ -818,6 +832,8 @@
       style="left:{selectedBox.left}px;top:{selectedBox.top}px;width:{selectedBox.width}px;height:{selectedBox.height}px;"
     >
       <div class="text-handle-move" title="Drag to move"></div>
+      <div class="text-handle-edge text-handle-edge-left" title="Drag to resize width"></div>
+      <div class="text-handle-edge text-handle-edge-right" title="Drag to resize width"></div>
       <div class="text-handle-resize"></div>
     </div>
   {/if}
