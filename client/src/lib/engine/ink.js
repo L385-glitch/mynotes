@@ -2,8 +2,16 @@
 
 export const A4 = { w: 794, h: 1123 };
 
-export const PEN_COLORS = ['#1f2937', '#ffffff', '#dc2626', '#2563eb', '#16a34a', '#d97706'];
-export const HIGHLIGHTER_COLORS = ['#fde047', '#bbf7d0', '#bfdbfe', '#fbcfe8', '#fed7aa'];
+export const PEN_COLORS = [
+  '#1f2937', '#ffffff', '#64748b',
+  '#dc2626', '#ea580c', '#d97706',
+  '#16a34a', '#0d9488', '#2563eb',
+  '#0ea5e9', '#7c3aed', '#db2777',
+];
+export const HIGHLIGHTER_COLORS = [
+  '#fde047', '#bbf7d0', '#bfdbfe', '#fbcfe8',
+  '#fed7aa', '#ddd6fe', '#99f6e4', '#fecaca',
+];
 
 export function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
@@ -110,6 +118,13 @@ export function drawStroke(ctx, s, fast = false) {
 export function drawTextItem(ctx, t) {
   if (!t.text) return;
   ctx.save();
+  if (t.border && t.border.width > 0) {
+    const b = textBounds(t);
+    const pad = 6;
+    ctx.strokeStyle = t.border.color || '#1f2937';
+    ctx.lineWidth = t.border.width;
+    ctx.strokeRect(b.x - pad, b.y - pad, b.w + pad * 2, b.h + pad * 2);
+  }
   ctx.fillStyle = t.color;
   ctx.font = `${t.size}px ${FONT}`;
   ctx.textBaseline = 'top';

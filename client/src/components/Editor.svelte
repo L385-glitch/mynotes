@@ -23,7 +23,9 @@
   let size = $state(3);
   let exporting = $state(false);
   let bgOpen = $state(false);
+  let colorOpen = $state(false);
   let eraserMode = $state('brush');
+  let selText = $state(null);
 
   // Shared zoom (scale) applied to every page sheet in the stack.
   let zoom = $state(1);
@@ -143,9 +145,26 @@
   function setTool(t) {
     tool = t;
     bgOpen = false;
+    colorOpen = false;
     if (t === 'select') return;
-    if (t === 'highlighter' && !HIGHLIGHTER_COLORS.includes(color)) color = HIGHLIGHTER_COLORS[0];
-    if (t !== 'highlighter' && !PEN_COLORS.includes(color)) color = PEN_COLORS[0];
+    // Only reset when crossing between the highlighter and ink palettes, so a
+    // custom color picked in the color popover survives tool switches.
+    if (t === 'highlighter') {
+      if (!HIGHLIGHTER_COLORS.includes(color)) color = HIGHLIGHTER_COLORS[0];
+    } else if (HIGHLIGHTER_COLORS.includes(color)) {
+      color = PEN_COLORS[0];
+    }
+  }
+
+  // The text item currently selected on the active page (null when none).
+  function onTextSelect(t) {
+    selText = t;
+  }
+
+  // Apply a formatting patch to the selected text via the active page's API.
+  function patchText(patch) {
+    if (!selText) return;
+    activeApi()?.updateText?.(selText.id, patch);
   }
 
   function zoomIn() {
@@ -235,15 +254,41 @@
     {#if tool !== 'select'}
       <div class="mx-1 h-6 w-px bg-stone-200"></div>
 
-      <div class="flex items-center gap-1.5">
-        {#each palette as c (c)}
-          <button
-            class="h-5 w-5 rounded-full border {c === color ? 'border-[#4f7cff] ring-2 ring-[#4f7cff]/40' : 'border-stone-300'}"
-            style="background:{c}"
-            title={c}
-            onclick={() => (color = c)}
-          ></button>
-        {/each}
+      <div class="relative">
+        <button
+          class="flex items-center gap-1 rounded-lg p-1.5 text-stone-600 hover:bg-stone-100"
+          title="Color"
+          onclick={() => (colorOpen = !colorOpen)}
+        >
+          <span class="h-5 w-5 rounded-full border border-stone-300" style="background:{color}"></span>
+          <Icon d={I.chevronDown} size={12} />
+        </button>
+        {#if colorOpen}
+          <div class="absolute left-0 top-full z-30 mt-1 w-48 rounded-lg border border-stone-200 bg-white p-2 shadow-lg">
+            <div class="grid grid-cols-6 gap-1.5">
+              {#each palette as c (c)}
+                <button
+                  class="h-6 w-6 rounded-full border {c === color ? 'border-[#4f7cff] ring-2 ring-[#4f7cff]/40' : 'border-stone-200'}"
+                  style="background:{c}"
+                  title={c}
+                  onclick={() => {
+                    color = c;
+                    colorOpen = false;
+                  }}
+                ></button>
+              {/each}
+            </div>
+            <div class="mt-2 flex items-center gap-2 border-t border-stone-200 pt-2">
+              <input
+                type="color"
+                value={color}
+                oninput={(e) => (color = e.target.value)}
+                class="h-7 w-9 cursor-pointer rounded border border-stone-200 bg-transparent p-0.5"
+              />
+              <span class="text-xs text-stone-500">Custom color</span>
+            </div>
+          </div>
+        {/if}
       </div>
 
       <div class="mx-1 h-6 w-px bg-stone-200"></div>
@@ -307,6 +352,75 @@
     </div>
   </div>
 
+  {#if tool === 'text' && selText}
+    <div class="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1.5 border-b border-stone-200 bg-stone-50 px-3 py-1.5 order-3">
+      <span class="text-xs font-semibold uppercase tracking-wide text-stone-400">Text</span>
+
+      <div class="flex items-center gap-2">
+        <span class="text-xs text-stone-500">Size</span>
+        <input
+          type="range"
+          min="8"
+          max="72"
+          step="1"
+          value={selText.size}
+          oninput={(e) => patchText({ size: Number(e.target.value) })}
+          class="h-1 w-24 accent-[#4f7cff]"
+          title="Text size"
+        />
+        <span class="w-6 text-right text-xs text-stone-500">{Math.round(selText.size)}</span>
+      </div>
+
+      <div class="flex items-center gap-1">
+        <span class="text-xs text-stone-500">Color</span>
+        {#each PEN_COLORS as c (c)}
+          <button
+            class="h-4 w-4 rounded-full border {selText.color === c ? 'border-[#4f7cff] ring-1 ring-[#4f7cff]/50' : 'border-stone-300'}"
+            style="background:{c}"
+            title={c}
+            onclick={() => patchText({ color: c })}
+          ></button>
+        {/each}
+        <input
+          type="color"
+          value={selText.color}
+          oninput={(e) => patchText({ color: e.target.value })}
+          class="h-5 w-6 cursor-pointer rounded border border-stone-200 bg-transparent p-0"
+          title="Custom text color"
+        />
+      </div>
+
+      <div class="flex items-center gap-1.5">
+        <span class="text-xs text-stone-500">Border</span>
+        <button
+          class="rounded px-2 py-0.5 text-xs font-medium {selText.border ? 'bg-white text-[#4f7cff] shadow-sm' : 'text-stone-500 hover:bg-stone-100'}"
+          onclick={() => patchText({ border: selText.border ? null : { color: '#1f2937', width: 2 } })}
+        >
+          {selText.border ? 'On' : 'Off'}
+        </button>
+        {#if selText.border}
+          <input
+            type="color"
+            value={selText.border.color}
+            oninput={(e) => patchText({ border: { ...selText.border, color: e.target.value } })}
+            class="h-5 w-6 cursor-pointer rounded border border-stone-200 bg-transparent p-0"
+            title="Border color"
+          />
+          <input
+            type="range"
+            min="1"
+            max="6"
+            step="0.5"
+            value={selText.border.width}
+            oninput={(e) => patchText({ border: { ...selText.border, width: Number(e.target.value) } })}
+            class="h-1 w-16 accent-[#4f7cff]"
+            title="Border width"
+          />
+        {/if}
+      </div>
+    </div>
+  {/if}
+
   <div class="flex h-12 shrink-0 items-center gap-1 border-b border-stone-200 bg-white px-2 sm:px-3 order-1">
     <button class="rounded p-1.5 text-stone-500 hover:bg-stone-100 md:hidden" onclick={onToggleSidebar} aria-label="Menu">
       <Icon d={I.menu} />
@@ -352,7 +466,7 @@
     </button>
   </div>
 
-  <div class="min-h-0 flex-1 overflow-y-auto order-3" bind:this={containerRef}>
+  <div class="min-h-0 flex-1 overflow-y-auto order-4" bind:this={containerRef}>
     <div class="mx-auto flex max-w-5xl flex-col items-center gap-8 px-4 py-8">
       {#each pages as p (p.id)}
         <div class="relative">
@@ -369,6 +483,7 @@
             onActive={onPageActive}
             onRegister={registerApi}
             onZoomRequest={setZoom}
+            onTextSelect={onTextSelect}
           />
         </div>
       {/each}

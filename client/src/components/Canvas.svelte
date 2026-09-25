@@ -18,6 +18,7 @@
     onActive,
     onRegister,
     onZoomRequest,
+    onTextSelect,
   } = $props();
 
   let containerEl = $state(null);
@@ -130,6 +131,14 @@
       if (editing) commitEdit();
     }
     if (tool !== 'select') selStroke = null;
+  });
+
+  // Report the selected text item (or null) to the editor so it can show
+  // formatting controls for it.
+  $effect(() => {
+    const id = selected;
+    const t = texts.find((o) => o.id === id) ?? null;
+    onTextSelect?.(t ? { ...t } : null);
   });
 
   // Re-size the backing canvas whenever the shared zoom changes.
@@ -362,6 +371,10 @@
           // Bottom-right corner → resize (width + font size).
           selected = hit.id;
           gesture = { type: 'resize-text', id: hit.id, origW: hit.w || 320, origSize: hit.size, startPage: p, started: false };
+        } else if (Math.hypot(p.x - b.x, p.y - b.y) < 14 / zoom) {
+          // Top-left corner → dedicated drag handle, moves immediately.
+          selected = hit.id;
+          gesture = { type: 'maybe-move-text', id: hit.id, startX: e.clientX, startY: e.clientY, origX: hit.x, origY: hit.y, threshold: 0 };
         } else {
           // Body → select, and a potential drag-to-move.
           selected = hit.id;
@@ -444,7 +457,7 @@
       const dx = e.clientX - gesture.startX;
       const dy = e.clientY - gesture.startY;
       if (gesture.type === 'maybe-move-text') {
-        if (Math.hypot(dx, dy) < 3) return;
+        if (Math.hypot(dx, dy) < (gesture.threshold ?? 3)) return;
         pushUndo();
         gesture = { ...gesture, type: 'move-text' };
       }
@@ -674,6 +687,23 @@
     scheduleSave(page?.id);
   }
 
+  // Apply a property patch (size, color, border, …) to the selected text item
+  // from the editor's formatting controls. Rapid successive calls (slider
+  // drags) coalesce into a single undo step.
+  let lastTextPropUndo = 0;
+  function updateText(id, patch) {
+    const t = texts.find((o) => o.id === id);
+    if (!t) return;
+    const now = Date.now();
+    if (now - lastTextPropUndo > 500) {
+      pushUndo();
+      lastTextPropUndo = now;
+    }
+    texts = texts.map((o) => (o.id === id ? { ...o, ...patch } : o));
+    scheduleSave(page?.id);
+    requestDraw();
+  }
+
   // Delete the selected stroke (select tool only).
   function deleteSelectedStroke() {
     if (tool !== 'select' || !selStroke) return;
@@ -744,12 +774,12 @@
   // Expose this page's imperative API to the editor (keyed by page id).
   $effect(() => {
     const id = page?.id;
-    if (id != null) onRegister?.(id, { undo, redo, flushSave, commitEdit });
+    if (id != null) onRegister?.(id, { undo, redo, flushSave, commitEdit, updateText });
   });
 
   let editStyle = $derived(
     editing
-      ? `left:${editing.x * zoom}px;top:${editing.y * zoom}px;width:${editing.w * zoom}px;height:${Math.max(48, editing.size * 2.7 * zoom)}px;font-size:${editing.size * zoom}px;line-height:${editing.size * 1.35 * zoom}px;color:${editing.color};`
+      ? `left:${editing.x * zoom}px;top:${editing.y * zoom}px;width:${editing.w * zoom}px;height:${Math.max(48, editing.size * 2.7 * zoom)}px;font-size:${editing.size * zoom}px;line-height:${editing.size * 1.35 * zoom}px;color:${editing.color};${editing.border ? `border:${editing.border.width * zoom}px solid ${editing.border.color};` : ''}`
       : ''
   );
 
@@ -787,6 +817,7 @@
       class="text-select-box"
       style="left:{selectedBox.left}px;top:{selectedBox.top}px;width:{selectedBox.width}px;height:{selectedBox.height}px;"
     >
+      <div class="text-handle-move" title="Drag to move"></div>
       <div class="text-handle-resize"></div>
     </div>
   {/if}

@@ -129,3 +129,24 @@ body {
   border: 1.5px solid var(--accent);
   border-radius: 2px;
 }
+
+/* Drag handle (top-left corner) used to move a selected text field. */
+.text-handle-move {
+  position: absolute;
+  left: -8px;
+  top: -8px;
+  width: 15px;
+  height: 15px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface);
+  border: 1.5px solid var(--accent);
+  border-radius: 4px;
+}
+.text-handle-move::after {
+  content: '';
+  width: 8px;
+  height: 8px;
+  background: radial-gradient(circle, var(--accent) 1px, transparent 1.3px) 0 0 / 4px 4px;
+}
