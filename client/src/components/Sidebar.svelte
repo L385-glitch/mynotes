@@ -7,6 +7,8 @@
     tags = [],
     currentFolderId = null,
     activeTag = null,
+    collapsed = false,
+    onToggleCollapsed,
     onNavigateFolder,
     onNewNotebook,
     onNewFolder,
@@ -18,11 +20,24 @@
   let query = $state('');
   let results = $state(null);
   let searchTimer = null;
+  let isDesktop = $state(window.matchMedia('(min-width: 768px)').matches);
 
   const I = {
     folder: ['M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z'],
     files: ['M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z', 'M14 2v6h6'],
+    panelClose: ['M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z', 'M9 3v18', 'm16 15-3-3 3-3'],
+    panelOpen: ['M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z', 'M9 3v18', 'm14 9 3 3-3 3'],
   };
+
+  // Collapse only applies on desktop; on mobile the sidebar is an overlay.
+  const minimized = $derived(collapsed && isDesktop);
+
+  $effect(() => {
+    const mq = window.matchMedia('(min-width: 768px)');
+    const onChange = (e) => (isDesktop = e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  });
 
   $effect(() => {
     const q = query.trim();
@@ -49,11 +64,24 @@
   }
 </script>
 
-<aside class="flex h-full w-72 shrink-0 flex-col border-r border-stone-200 bg-white">
+<aside class="flex h-full shrink-0 flex-col border-r border-stone-200 bg-white {minimized ? 'w-12 items-center' : 'w-72'}">
+  {#if minimized}
+    <div class="flex flex-col items-center gap-3 py-3">
+      <button class="rounded p-1.5 text-stone-500 hover:bg-stone-100" title="Show folders" aria-label="Show folders" onclick={onToggleCollapsed}>
+        <Icon d={I.panelOpen} size={18} />
+      </button>
+      <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-[#4f7cff] text-sm font-bold text-white">M</div>
+    </div>
+  {:else}
   <div class="flex items-center gap-2 px-4 pt-4 pb-2">
     <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-[#4f7cff] text-sm font-bold text-white">M</div>
     <h1 class="text-lg font-semibold tracking-tight">Mynotes</h1>
-    <button class="ml-auto rounded p-1 text-stone-500 hover:bg-stone-100 md:hidden" onclick={onClose} aria-label="Close sidebar">✕</button>
+    <div class="ml-auto flex items-center">
+      <button class="hidden rounded p-1 text-stone-500 hover:bg-stone-100 md:block" title="Hide folders" aria-label="Hide folders" onclick={onToggleCollapsed}>
+        <Icon d={I.panelClose} size={18} />
+      </button>
+      <button class="rounded p-1 text-stone-500 hover:bg-stone-100 md:hidden" onclick={onClose} aria-label="Close sidebar">✕</button>
+    </div>
   </div>
 
   <div class="px-3 pb-2">
@@ -132,4 +160,5 @@
       {/if}
     {/if}
   </div>
+  {/if}
 </aside>

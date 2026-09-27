@@ -141,13 +141,6 @@
     onTextSelect?.(t ? { ...t } : null);
   });
 
-  // Re-size the backing canvas whenever the shared zoom changes.
-  $effect(() => {
-    void zoom;
-    resize();
-    requestDraw();
-  });
-
   function ensureContentCanvas() {
     const w = Math.max(1, Math.round(page.width * RES));
     const h = Math.max(1, Math.round(page.height * RES));
@@ -199,7 +192,7 @@
     const bg = getComputedStyle(document.documentElement).getPropertyValue('--canvas-bg').trim() || '#e9e6df';
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, W, H);
-    const k = dpr * zoom;
+    const k = dpr * RES;
     ctx.setTransform(k, 0, 0, k, 0, 0);
     ctx.save();
     ctx.shadowColor = 'rgba(0,0,0,0.28)';
@@ -256,16 +249,14 @@
     return size / zoom + 3;
   }
 
-  // Size the backing canvas to the page at the current zoom (no pan offset).
+  // Size the backing canvas to a fixed resolution (independent of zoom). Zoom
+  // is applied as a CSS transform on the canvas, so changing the zoom level
+  // never re-allocates or re-blits this (potentially large) canvas.
   function resize() {
     if (!canvasEl || !page) return;
     dpr = window.devicePixelRatio || 1;
-    const w = Math.max(1, Math.round(page.width * zoom));
-    const h = Math.max(1, Math.round(page.height * zoom));
-    canvasEl.width = Math.round(w * dpr);
-    canvasEl.height = Math.round(h * dpr);
-    canvasEl.style.width = w + 'px';
-    canvasEl.style.height = h + 'px';
+    canvasEl.width = Math.max(1, Math.round(page.width * RES * dpr));
+    canvasEl.height = Math.max(1, Math.round(page.height * RES * dpr));
     requestDraw();
   }
 
@@ -820,6 +811,7 @@
   <canvas
     class="ink-canvas tool-{tool}"
     bind:this={canvasEl}
+    style="position:absolute;left:0;top:0;width:{page.width * RES}px;height:{page.height * RES}px;transform:scale({zoom / RES});transform-origin:top left"
     onpointerdown={onPointerDown}
     onpointermove={onPointerMove}
     onpointerup={onPointerEnd}

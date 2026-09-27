@@ -22,6 +22,7 @@
   let modalNotebook = $state(null);
   let modalFolder = $state(null);
   let sidebarOpen = $state(false);
+  let sidebarCollapsed = $state(initialSidebarCollapsed());
   let importing = $state(false);
   let dark = $state(initialDark());
   let settingsOpen = $state(false);
@@ -37,6 +38,24 @@
 
   function setDark(v) {
     dark = v;
+  }
+
+  $effect(() => {
+    try {
+      localStorage.setItem('mynotes-sidebar-collapsed', sidebarCollapsed ? '1' : '0');
+    } catch {}
+  });
+
+  function toggleSidebarCollapsed() {
+    sidebarCollapsed = !sidebarCollapsed;
+  }
+
+  function initialSidebarCollapsed() {
+    try {
+      return localStorage.getItem('mynotes-sidebar-collapsed') === '1';
+    } catch {
+      return false;
+    }
   }
 
   const notebook = $derived(notebooks.find((n) => n.id === selectedNotebookId) ?? null);
@@ -208,6 +227,8 @@
       {tags}
       {currentFolderId}
       {activeTag}
+      collapsed={sidebarCollapsed}
+      onToggleCollapsed={toggleSidebarCollapsed}
       onNavigateFolder={navigateFolder}
       onNewNotebook={newNotebook}
       onNewFolder={newFolder}
