@@ -208,7 +208,21 @@
     await refresh();
   }
 
-  onMount(refresh);
+  onMount(() => {
+    refresh();
+    // Flush pending saves when the tab/app is hidden (e.g. switching apps on
+    // iPad), so other devices get the latest content even if the 2s autosave
+    // hasn't fired yet.
+    function onHide() {
+      if (document.visibilityState === 'hidden') editorApi?.flush?.();
+    }
+    document.addEventListener('visibilitychange', onHide);
+    window.addEventListener('pagehide', onHide);
+    return () => {
+      document.removeEventListener('visibilitychange', onHide);
+      window.removeEventListener('pagehide', onHide);
+    };
+  });
 </script>
 
 <div class="flex h-full overflow-hidden">

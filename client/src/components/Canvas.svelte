@@ -14,10 +14,15 @@
     eraserMode = 'brush',
     dark = false,
     zoom = 1,
+    rendered = true,
     onContentChange,
     onActive,
     onRegister,
     onZoomRequest,
+    onPinchStart,
+    onPinchMove,
+    onPinchEnd,
+    onNeedRender,
     onTextSelect,
   } = $props();
 
@@ -40,9 +45,11 @@
   let ready = false;
 
   const RES = 2;
+  const SAVE_INTERVAL = 2000;
   const pointers = new Map();
   let gesture = null;
   let rafPending = false;
+  let contentDirty = false;
   const undoStack = [];
   const redoStack = [];
   let currentPageId = null;
@@ -50,9 +57,72 @@
   let dirty = false;
   let holdTimer = null;
 
+  // Load a page's content and (re)build its canvases. Called when the page
+  // changes and when the page scrolls back into the render window.
+  function loadPage(p) {
+    currentPageId = p.id;
+    strokes = (p.content?.strokes ?? []).map((s) => ({ ...s, id: s.id ?? uid() }));
+    texts = (p.content?.texts ?? []).map((t) => ({ ...t, id: t.id ?? uid() }));
+    live = null;
+    editing = null;
+    selected = null;
+    selStroke = null;
+    eraserPos = null;
+    pdfCanvas = null;
+    pdfTextLines = [];
+    undoStack.length = 0;
+    redoStack.length = 0;
+    if (rendered) {
+      ensureContentCanvas();
+      renderContent();
+      resize();
+      requestDraw();
+      if (p.background === 'pdf' && p.pdfId != null) loadPdf(p);
+    } else {
+      releaseCanvases();
+    }
+  }
+
+  function loadPdf(p) {
+    renderPdfPage(p.pdfId, (p.pdfPage ?? 0) + 1, RES)
+      .then((c) => {
+        if (page?.id !== p.id || !rendered) return;
+        pdfCanvas = c;
+        renderContent();
+        requestDraw();
+      })
+      .catch((e) => console.error('pdf render failed', e));
+    getPdfTextLayout(p.pdfId, (p.pdfPage ?? 0) + 1)
+      .then((lines) => {
+        if (page?.id !== p.id) return;
+        pdfTextLines = lines;
+      })
+      .catch((e) => console.error('pdf text layout failed', e));
+  }
+
+  // Free the (potentially large) backing canvases while this page is far
+  // offscreen. The stroke/text data stays in memory so undo history survives.
+  function releaseCanvases() {
+    contentCanvas = null;
+    pdfCanvas = null;
+    pdfTextLines = [];
+    if (canvasEl) {
+      canvasEl.width = 1;
+      canvasEl.height = 1;
+    }
+  }
+
+  // Runs only when the page id or the render window actually changes. The
+  // effect body reads other reactive state (e.g. `editing` via commitEdit),
+  // so without this guard it would re-run on unrelated changes.
+  let lastPageKey = null;
   $effect(() => {
     const p = page;
+    const r = rendered;
+    const key = p ? p.id + ':' + r : 'none';
     clearHoldTimer();
+    if (key === lastPageKey) return;
+    lastPageKey = key;
     if (!p) {
       if (editing) commitEdit();
       if (currentPageId != null) flushSave(currentPageId);
@@ -66,53 +136,47 @@
       pdfCanvas = null;
       pdfTextLines = [];
       currentPageId = null;
+      releaseCanvases();
       return;
     }
-    if (p.id === currentPageId) return;
-    // Page is changing: commit any pending text edit and save the OLD page's
-    // content to the OLD page id (strokes/texts still hold the old content
-    // until we reset them below).
-    if (editing) commitEdit();
-    if (currentPageId != null) flushSave(currentPageId);
-    currentPageId = p.id;
-    strokes = (p.content?.strokes ?? []).map((s) => ({ ...s, id: s.id ?? uid() }));
-    texts = (p.content?.texts ?? []).map((t) => ({ ...t, id: t.id ?? uid() }));
-    live = null;
-    editing = null;
-    selected = null;
-    selStroke = null;
-    eraserPos = null;
-    pdfCanvas = null;
-    pdfTextLines = [];
-    undoStack.length = 0;
-    redoStack.length = 0;
-    ensureContentCanvas();
-    renderContent();
-    resize();
-    requestDraw();
-    if (p.background === 'pdf' && p.pdfId != null) {
-      renderPdfPage(p.pdfId, (p.pdfPage ?? 0) + 1, RES)
-        .then((c) => {
-          if (page?.id !== p.id) return;
-          pdfCanvas = c;
-          renderContent();
-          requestDraw();
-        })
-        .catch((e) => console.error('pdf render failed', e));
-      getPdfTextLayout(p.pdfId, (p.pdfPage ?? 0) + 1)
-        .then((lines) => {
-          if (page?.id !== p.id) return;
-          pdfTextLines = lines;
-        })
-        .catch((e) => console.error('pdf text layout failed', e));
+    if (p.id !== currentPageId) {
+      // Page is changing: commit any pending text edit and save the OLD page's
+      // content to the OLD page id (strokes/texts still hold the old content
+      // until we reset them below).
+      if (editing) commitEdit();
+      if (currentPageId != null) flushSave(currentPageId);
+      loadPage(p);
+      return;
+    }
+    // Same page, render window changed (scrolled in/out of view).
+    if (r) {
+      if (!contentCanvas) {
+        ensureContentCanvas();
+        renderContent();
+      }
+      resize();
+      requestDraw();
+      if (p.background === 'pdf' && p.pdfId != null && !pdfCanvas) loadPdf(p);
+    } else {
+      releaseCanvases();
     }
   });
 
   $effect(() => {
     const s = strokes;
     const t = texts;
-    const bg = page?.background;
     if (!contentCanvas) return;
+    // Coalesce: mark the content canvas dirty and let the next rAF blit it,
+    // so several stroke updates in one frame cost a single re-render.
+    contentDirty = true;
+    requestDraw();
+  });
+
+  // Re-render the content canvas when the page's background changes (the page
+  // object is replaced in place, so the page-id guard above doesn't catch it).
+  $effect(() => {
+    const bg = page?.background;
+    if (!contentCanvas || !bg) return;
     renderContent();
     requestDraw();
   });
@@ -183,24 +247,16 @@
   }
 
   function draw() {
-    if (!canvasEl || !page || !ready) return;
+    if (!canvasEl || !page || !ready || !rendered) return;
+    if (contentDirty) {
+      contentDirty = false;
+      renderContent();
+    }
     const ctx = canvasEl.getContext('2d');
-    const W = canvasEl.width;
-    const H = canvasEl.height;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, W, H);
-    const bg = getComputedStyle(document.documentElement).getPropertyValue('--canvas-bg').trim() || '#e9e6df';
-    ctx.fillStyle = bg;
-    ctx.fillRect(0, 0, W, H);
-    const k = dpr * RES;
+    ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+    const k = Math.max(dpr, RES);
     ctx.setTransform(k, 0, 0, k, 0, 0);
-    ctx.save();
-    ctx.shadowColor = 'rgba(0,0,0,0.28)';
-    ctx.shadowBlur = 24 / zoom;
-    ctx.shadowOffsetY = 5 / zoom;
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, page.width, page.height);
-    ctx.restore();
     if (contentCanvas) ctx.drawImage(contentCanvas, 0, 0, page.width, page.height);
     if (live) drawStroke(ctx, live, true);
     if (selStroke) {
@@ -249,14 +305,17 @@
     return size / zoom + 3;
   }
 
-  // Size the backing canvas to a fixed resolution (independent of zoom). Zoom
-  // is applied as a CSS transform on the canvas, so changing the zoom level
-  // never re-allocates or re-blits this (potentially large) canvas.
+  // Size the backing canvas to max(dpr, RES) page units (independent of zoom).
+  // The content canvas (RES x) is the high-res source of truth and is blitted
+  // here; zoom is a CSS transform, so changing it never re-allocates this
+  // canvas. Using max() instead of the old RES*dpr matters for memory on
+  // high-dpi tablets: an A4 page would otherwise be ~57MB per page.
   function resize() {
-    if (!canvasEl || !page) return;
+    if (!canvasEl || !page || !rendered) return;
     dpr = window.devicePixelRatio || 1;
-    canvasEl.width = Math.max(1, Math.round(page.width * RES * dpr));
-    canvasEl.height = Math.max(1, Math.round(page.height * RES * dpr));
+    const scale = Math.max(dpr, RES);
+    canvasEl.width = Math.max(1, Math.round(page.width * scale));
+    canvasEl.height = Math.max(1, Math.round(page.height * scale));
     requestDraw();
   }
 
@@ -323,6 +382,7 @@
   function onPointerDown(e) {
     const isMouse = e.pointerType === 'mouse';
     if (isMouse && e.button !== 0) return;
+    if (!rendered) onNeedRender?.(page?.id);
     if (editing) commitEdit();
     canvasEl.setPointerCapture(e.pointerId);
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -339,6 +399,7 @@
         d0: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)),
         zoom0: zoom,
       };
+      onPinchStart?.({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
       return;
     }
     const p = toPage(e);
@@ -409,7 +470,9 @@
     if (gesture?.type === 'pinch' && pointers.size >= 2) {
       const [a, b] = [...pointers.values()];
       const d1 = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
-      onZoomRequest?.(gesture.zoom0 * (d1 / gesture.d0));
+      // Report the absolute zoom plus the pinch midpoint: the editor anchors
+      // the zoom at the midpoint and scrolls by its movement (two-finger pan).
+      onPinchMove?.(gesture.zoom0 * (d1 / gesture.d0), (a.x + b.x) / 2, (a.y + b.y) / 2);
       return;
     }
     if (gesture?.type === 'maybe-move-stroke' || gesture?.type === 'move-stroke') {
@@ -542,6 +605,7 @@
     if (gesture?.type === 'pinch' && pointers.size < 2) {
       gesture = null;
       eraserPos = null;
+      onPinchEnd?.();
       requestDraw();
       return;
     }
@@ -598,7 +662,8 @@
   function onWheel(e) {
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
-      onZoomRequest?.(zoom * Math.exp(-e.deltaY * 0.01));
+      // Pass the cursor Y so the editor can anchor the zoom there.
+      onZoomRequest?.(zoom * Math.exp(-e.deltaY * 0.01), e.clientY);
     }
     // Non-ctrl wheel: let the parent scroll container handle it natively.
   }
@@ -721,24 +786,29 @@
 
   function cancelSave() {
     if (saveTimer) {
-      clearTimeout(saveTimer);
+      clearInterval(saveTimer);
       saveTimer = null;
     }
   }
 
-  // Debounced autosave. The page id is captured at schedule time and re-checked
-  // at fire time so a save can never land on the wrong page after a switch.
+  // Interval autosave: while the page has unsaved changes, persist it every
+  // 2s so other devices stay up to date even mid-drawing. The interval reads
+  // the current content at fire time and only saves the page this component
+  // currently holds (a page switch flushes and cancels the interval first).
   function scheduleSave(pid) {
     if (pid == null) return;
     dirty = true;
-    if (saveTimer) clearTimeout(saveTimer);
-    const content = { strokes, texts };
-    saveTimer = setTimeout(() => {
-      saveTimer = null;
+    if (saveTimer) return;
+    saveTimer = setInterval(() => {
+      if (!dirty) {
+        clearInterval(saveTimer);
+        saveTimer = null;
+        return;
+      }
+      if (currentPageId == null) return;
       dirty = false;
-      if (currentPageId !== pid) return; // page switched; flushSave already saved
-      onContentChange?.(pid, content);
-    }, 700);
+      onContentChange?.(currentPageId, { strokes, texts });
+    }, SAVE_INTERVAL);
   }
 
   // Immediate save of the current content (awaited by the caller before any
@@ -804,7 +874,7 @@
 </script>
 
 <div
-  class="relative shrink-0"
+  class="page-sheet relative shrink-0"
   style="width:{page.width * zoom}px;height:{page.height * zoom}px"
   bind:this={containerEl}
 >

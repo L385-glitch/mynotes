@@ -1,4 +1,5 @@
 <script>
+  import { tick } from 'svelte';
   import Canvas from './Canvas.svelte';
   import Icon from './Icon.svelte';
   import { api } from '../lib/api.js';
@@ -34,6 +35,18 @@
   let pageApis = $state({});
   let containerRef = $state(null);
 
+  // Pages whose canvas is actually allocated. Only pages near the viewport
+  // (plus pages the user is touching) keep a full-resolution canvas in
+  // memory; the rest render as lightweight placeholders.
+  let renderedIds = $state(new Set());
+  let forcedRenderIds = $state(new Set());
+  const pageEls = new Map();
+  let observer = null;
+
+  // Active two-finger gesture (null when none). While set, the scroll
+  // container is locked so the view can't jump to another page mid-zoom.
+  let pinch = $state(null);
+
   const MIN_ZOOM = 0.1;
   const MAX_ZOOM = 8;
   const zoomPct = $derived(Math.round(zoom * 100));
@@ -57,8 +70,99 @@
     }
   });
 
-  function setZoom(z) {
-    zoom = clampZoom(z);
+  // Change the zoom level while keeping the point at `anchorClientY` (a
+  // client-space Y, e.g. the pinch midpoint or cursor) fixed on screen.
+  // Without this, zooming in expands the content above the viewport and the
+  // view snaps to a completely different page.
+  function setZoom(z, anchorClientY = null) {
+    const el = containerRef;
+    const old = zoom;
+    const z1 = clampZoom(z);
+    zoom = z1;
+    if (anchorClientY == null || !el || z1 === old) return;
+    const anchorY = anchorClientY - el.getBoundingClientRect().top;
+    const factor = z1 / old;
+    // Apply after the new zoom is laid out, otherwise the browser clamps the
+    // scroll position against the old content height. Reading scrollTop here
+    // (not at event time) lets rapid successive events compose correctly.
+    tick().then(() => {
+      if (containerRef) containerRef.scrollTop = (containerRef.scrollTop + anchorY) * factor - anchorY;
+    });
+  }
+
+  // Track which pages are near the viewport so their canvases can be
+  // allocated/freed on demand.
+  $effect(() => {
+    const ps = pages;
+    if (!containerRef) return;
+    if (!observer) {
+      observer = new IntersectionObserver(
+        (entries) => {
+          let changed = false;
+          for (const en of entries) {
+            const id = Number(en.target.dataset.pageId);
+            const has = renderedIds.has(id);
+            if (en.isIntersecting ? !has : has) {
+              if (en.isIntersecting) renderedIds.add(id);
+              else renderedIds.delete(id);
+              changed = true;
+            }
+          }
+          if (changed) renderedIds = new Set(renderedIds);
+        },
+        { root: containerRef, rootMargin: '1200px 0px' }
+      );
+    }
+    const els = [...containerRef.querySelectorAll('[data-page-id]')];
+    for (const el of els) {
+      const id = Number(el.dataset.pageId);
+      pageEls.set(id, el);
+      observer.observe(el);
+    }
+    for (const [id, el] of [...pageEls]) {
+      if (!els.includes(el)) {
+        observer.unobserve(el);
+        pageEls.delete(id);
+      }
+    }
+  });
+
+  // A page the user touches must be rendered even if the observer hasn't
+  // (re)flagged it yet.
+  function needRender(id) {
+    if (id == null || forcedRenderIds.has(id)) return;
+    forcedRenderIds = new Set(forcedRenderIds).add(id);
+  }
+
+  function onPinchStart() {
+    pinch = { zLast: zoom, lastY: null };
+  }
+
+  function onPinchMove(z, midX, midY) {
+    if (!pinch) return;
+    const el = containerRef;
+    const z1 = clampZoom(z);
+    const dy = pinch.lastY != null ? midY - pinch.lastY : 0;
+    let anchorY = null;
+    let factor = 1;
+    if (el) {
+      anchorY = midY - el.getBoundingClientRect().top;
+      factor = pinch.zLast === z1 ? 1 : z1 / pinch.zLast;
+    }
+    pinch = { zLast: z1, lastY: midY };
+    zoom = z1;
+    if (anchorY != null) {
+      // Zoom about the midpoint, then follow the midpoint's movement
+      // (two-finger pan scrolls the stack). Applied after layout so rapid
+      // successive events compose against the latest scroll position.
+      tick().then(() => {
+        if (containerRef) containerRef.scrollTop = (containerRef.scrollTop + anchorY) * factor - anchorY + dy;
+      });
+    }
+  }
+
+  function onPinchEnd() {
+    pinch = null;
   }
 
   function registerApi(pageId, api_) {
@@ -167,14 +271,19 @@
     activeApi()?.updateText?.(selText.id, patch);
   }
 
+  function viewportCenterY() {
+    const el = containerRef;
+    return el ? el.getBoundingClientRect().top + el.clientHeight / 2 : null;
+  }
+
   function zoomIn() {
-    setZoom(zoom * 1.25);
+    setZoom(zoom * 1.25, viewportCenterY());
   }
   function zoomOut() {
-    setZoom(zoom * 0.8);
+    setZoom(zoom * 0.8, viewportCenterY());
   }
   function fitView() {
-    zoom = fitWidth();
+    setZoom(fitWidth(), viewportCenterY());
   }
 
   // The page the user last interacted with (falls back to the first page).
@@ -466,10 +575,13 @@
     </button>
   </div>
 
-  <div class="min-h-0 flex-1 overflow-y-auto order-4" bind:this={containerRef}>
+  <div
+    class="min-h-0 flex-1 order-4 {pinch ? 'overflow-hidden' : 'overflow-y-auto'}"
+    bind:this={containerRef}
+  >
     <div class="mx-auto flex max-w-5xl flex-col items-center gap-8 px-4 py-8">
       {#each pages as p (p.id)}
-        <div class="relative">
+        <div class="relative" data-page-id={p.id}>
           <span class="pointer-events-none absolute -top-6 left-0 text-xs font-medium text-stone-400">Page {p.idx + 1}</span>
           <Canvas
             page={p}
@@ -479,10 +591,15 @@
             eraserMode={eraserMode}
             {dark}
             {zoom}
+            rendered={renderedIds.has(p.id) || forcedRenderIds.has(p.id)}
             onContentChange={onContentChange}
             onActive={onPageActive}
             onRegister={registerApi}
             onZoomRequest={setZoom}
+            onPinchStart={onPinchStart}
+            onPinchMove={onPinchMove}
+            onPinchEnd={onPinchEnd}
+            onNeedRender={needRender}
             onTextSelect={onTextSelect}
           />
         </div>

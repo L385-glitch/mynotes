@@ -81,6 +81,13 @@ body {
 
 .dark .focus\:border-\[\#4f7cff\]:focus { border-color: var(--accent); }
 
+/* Page sheet: white paper + drop shadow. The shadow lives in CSS (not the
+   canvas) so it costs nothing during per-frame redraws. */
+.page-sheet {
+  background: #ffffff;
+  box-shadow: 0 5px 24px rgba(0, 0, 0, 0.28);
+}
+
 .ink-canvas {
   touch-action: none;
   display: block;
