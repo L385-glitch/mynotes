@@ -8,9 +8,43 @@ const textCache = new Map(); // `${pdfId}:${pageNum}` -> [{x,y,w,h}]
 // Rendered page canvases are shared by every consumer (editor pages, file
 // explorer thumbnails, export) and bounded by a global pixel budget so a big
 // PDF can never exhaust device memory. Oldest canvases are evicted first.
+// Phones get a smaller budget: iOS kills the whole web process when memory
+// pressure spikes, which is what made big PDFs "close" while scrolling.
 const canvasLru = new Map(); // `${pdfId}:${pageNum}:${res}` -> canvas
 let canvasPixels = 0;
-const MAX_CANVAS_PIXELS = 32_000_000; // ~128 MB of RGBA canvas memory
+const isMobile =
+  typeof window !== 'undefined' &&
+  (window.matchMedia?.('(pointer: coarse)')?.matches || window.innerWidth < 900);
+const MAX_CANVAS_PIXELS = isMobile ? 8_000_000 : 32_000_000; // ~32 / ~128 MB of RGBA
+
+// Cap parallel page decodes. Fast scrolling used to start a pdf.js render for
+// every page entering the window at once; each decode holds multi-MB buffers,
+// so the spike pushed iOS over its per-process memory limit.
+const waitQueue = [];
+let inFlight = 0;
+const MAX_IN_FLIGHT = 2;
+
+function withLimit(fn) {
+  return new Promise((resolve, reject) => {
+    const run = () => {
+      inFlight++;
+      fn().then(
+        (v) => {
+          inFlight--;
+          waitQueue.shift()?.();
+          resolve(v);
+        },
+        (e) => {
+          inFlight--;
+          waitQueue.shift()?.();
+          reject(e);
+        }
+      );
+    };
+    if (inFlight < MAX_IN_FLIGHT) run();
+    else waitQueue.push(run);
+  });
+}
 
 export async function getPdfDoc(pdfId) {
   const cached = docCache.get(pdfId);
@@ -37,13 +71,23 @@ export async function getPageCount(pdfId) {
 }
 
 // Render a PDF page to an offscreen canvas. `res` = canvas pixels per page-coordinate unit.
-export async function renderPdfPage(pdfId, pageNum, res = 2) {
+export function renderPdfPage(pdfId, pageNum, res = 2) {
   const key = `${pdfId}:${pageNum}:${res}`;
   const hit = canvasLru.get(key);
   if (hit) {
     canvasLru.delete(key);
     canvasLru.set(key, hit);
-    return hit;
+    return Promise.resolve(hit);
+  }
+  return withLimit(() => doRenderPage(pdfId, pageNum, res, key));
+}
+
+async function doRenderPage(pdfId, pageNum, res, key) {
+  const cached = canvasLru.get(key); // a queued duplicate may have filled it
+  if (cached) {
+    canvasLru.delete(key);
+    canvasLru.set(key, cached);
+    return cached;
   }
   const pdf = await getPdfDoc(pdfId);
   const page = await pdf.getPage(pageNum);
@@ -53,14 +97,10 @@ export async function renderPdfPage(pdfId, pageNum, res = 2) {
   canvas.height = Math.ceil(vp.height);
   const ctx = canvas.getContext('2d');
   await page.render({ canvasContext: ctx, viewport: vp }).promise;
-  // A concurrent call may have rendered the same page while we were waiting;
-  // keep the first result and let this one be garbage collected.
-  const existing = canvasLru.get(key);
-  if (existing) {
-    canvasLru.delete(key);
-    canvasLru.set(key, existing);
-    return existing;
-  }
+  // Release pdf.js's decoded page data (images/fonts). Without this, every
+  // page rendered during a session keeps its decoded buffers (many MB each
+  // on scanned PDFs) until the whole document is destroyed.
+  page.cleanup();
   canvasLru.set(key, canvas);
   canvasPixels += canvas.width * canvas.height;
   evictCanvases();

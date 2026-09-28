@@ -96,6 +96,10 @@
     const ps = pages;
     if (!containerRef) return;
     if (!observer) {
+      // Narrow screens get a smaller pre-render band: a 1200px margin on a
+      // phone keeps ~6 pages' canvases alive at once, which is a big chunk of
+      // the memory that makes iOS kill the page while scrolling fast.
+      const rootMargin = window.matchMedia('(max-width: 768px)').matches ? '300px 0px' : '1200px 0px';
       observer = new IntersectionObserver(
         (entries) => {
           let changed = false;
@@ -110,7 +114,7 @@
           }
           if (changed) renderedIds = new Set(renderedIds);
         },
-        { root: containerRef, rootMargin: '1200px 0px' }
+        { root: containerRef, rootMargin }
       );
     }
     const els = [...containerRef.querySelectorAll('[data-page-id]')];

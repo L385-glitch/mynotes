@@ -41,7 +41,6 @@
   let selStroke = $state(null);
   let eraserPos = null;
 
-  let dpr = 1;
   let ready = false;
 
   const RES = 2;
@@ -255,8 +254,7 @@
     const ctx = canvasEl.getContext('2d');
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
-    const k = Math.max(dpr, RES);
-    ctx.setTransform(k, 0, 0, k, 0, 0);
+    ctx.setTransform(RES, 0, 0, RES, 0, 0);
     if (contentCanvas) ctx.drawImage(contentCanvas, 0, 0, page.width, page.height);
     if (live) drawStroke(ctx, live, true);
     if (selStroke) {
@@ -305,17 +303,15 @@
     return size / zoom + 3;
   }
 
-  // Size the backing canvas to max(dpr, RES) page units (independent of zoom).
-  // The content canvas (RES x) is the high-res source of truth and is blitted
-  // here; zoom is a CSS transform, so changing it never re-allocates this
-  // canvas. Using max() instead of the old RES*dpr matters for memory on
-  // high-dpi tablets: an A4 page would otherwise be ~57MB per page.
+  // Size the backing canvas to RES page units (independent of zoom). The
+  // content canvas (RES x) is the highest-res source of truth and is blitted
+  // here, so a larger canvas would only upscale it — on 3x phones a dpr-sized
+  // canvas cost ~18MB per rendered A4 page for no visible gain. Zoom is a CSS
+  // transform, so changing it never re-allocates this canvas.
   function resize() {
     if (!canvasEl || !page || !rendered) return;
-    dpr = window.devicePixelRatio || 1;
-    const scale = Math.max(dpr, RES);
-    canvasEl.width = Math.max(1, Math.round(page.width * scale));
-    canvasEl.height = Math.max(1, Math.round(page.height * scale));
+    canvasEl.width = Math.max(1, Math.round(page.width * RES));
+    canvasEl.height = Math.max(1, Math.round(page.height * RES));
     requestDraw();
   }
 
