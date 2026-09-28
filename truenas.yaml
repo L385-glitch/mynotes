@@ -26,7 +26,7 @@
 # and set visibility to Public.
 services:
   mynotes:
-    image: ghcr.io/l385-glitch/mynotes:a308f147d07fde693110f1995423ed6695aa3ae2
+    image: ghcr.io/l385-glitch/mynotes:f8917156ff30576130b1d85ec83c2a8c0851fbd4
     ports:
       - "3100:3100"
     environment:
