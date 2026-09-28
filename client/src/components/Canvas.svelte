@@ -379,9 +379,31 @@
     requestDraw();
   }
 
+  // Nearest scrollable ancestor (the editor's page list).
+  function scrollAncestor() {
+    let el = canvasEl?.parentElement;
+    while (el && el !== document.body) {
+      const oy = getComputedStyle(el).overflowY;
+      if (oy === 'auto' || oy === 'scroll') return el;
+      el = el.parentElement;
+    }
+    return null;
+  }
+
   function onPointerDown(e) {
     const isMouse = e.pointerType === 'mouse';
     if (isMouse && e.button !== 0) return;
+    if (tool === 'hand') {
+      // Touch: the browser scrolls the page list natively (touch-action:
+      // pan-x pan-y), so there is nothing to do here. Mouse: drag manually.
+      if (isMouse) {
+        canvasEl.setPointerCapture(e.pointerId);
+        pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        canvasEl.classList.add('panning');
+        gesture = { type: 'pan', lastX: e.clientX, lastY: e.clientY };
+      }
+      return;
+    }
     if (!rendered) onNeedRender?.(page?.id);
     if (editing) commitEdit();
     canvasEl.setPointerCapture(e.pointerId);
@@ -467,6 +489,16 @@
   function onPointerMove(e) {
     if (!pointers.has(e.pointerId)) return;
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (gesture?.type === 'pan') {
+      const sc = scrollAncestor();
+      if (sc) {
+        sc.scrollLeft -= e.clientX - gesture.lastX;
+        sc.scrollTop -= e.clientY - gesture.lastY;
+      }
+      gesture.lastX = e.clientX;
+      gesture.lastY = e.clientY;
+      return;
+    }
     if (gesture?.type === 'pinch' && pointers.size >= 2) {
       const [a, b] = [...pointers.values()];
       const d1 = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
@@ -602,6 +634,11 @@
 
   function onPointerEnd(e) {
     pointers.delete(e.pointerId);
+    if (gesture?.type === 'pan') {
+      gesture = null;
+      canvasEl.classList.remove('panning');
+      return;
+    }
     if (gesture?.type === 'pinch' && pointers.size < 2) {
       gesture = null;
       eraserPos = null;
@@ -885,7 +922,7 @@
   bind:this={containerEl}
 >
   <canvas
-    class="ink-canvas tool-{tool}"
+    class="ink-canvas tool-{tool} {tool === 'hand' ? 'hand-pan' : ''}"
     bind:this={canvasEl}
     style="position:absolute;left:0;top:0;width:{page.width * RES}px;height:{page.height * RES}px;transform:scale({zoom / RES});transform-origin:top left"
     onpointerdown={onPointerDown}
@@ -911,6 +948,7 @@
       bind:this={textEl}
       style={editStyle}
       placeholder="Type here…"
+      enterkeyhint="done"
       bind:value={editing.text}
       onblur={commitEdit}
       onkeydown={(e) => {

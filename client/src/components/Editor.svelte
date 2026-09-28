@@ -210,6 +210,12 @@
 
   const I = {
     select: ['M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z'],
+    hand: [
+      'M18 11V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2',
+      'M14 10V4a2 2 0 0 0-2-2 2 2 0 0 0-2 2v2',
+      'M10 10.5V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2v8',
+      'M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15',
+    ],
     pen: ['M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z'],
     highlighter: ['m9 11-6 6v3h9l3-3', 'm22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4'],
     eraser: ['m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21', 'M22 21H7', 'm5 11 9 9'],
@@ -232,6 +238,7 @@
 
   const TOOLS = [
     { id: 'select', icon: I.select, label: 'Select' },
+    { id: 'hand', icon: I.hand, label: 'Hand (scroll the page)' },
     { id: 'pen', icon: I.pen, label: 'Pen' },
     { id: 'highlighter', icon: I.highlighter, label: 'Highlighter' },
     { id: 'eraser', icon: I.eraser, label: 'Eraser' },
@@ -251,7 +258,7 @@
     tool = t;
     bgOpen = false;
     colorOpen = false;
-    if (t === 'select') return;
+    if (t === 'select' || t === 'hand') return;
     // Only reset when crossing between the highlighter and ink palettes, so a
     // custom color picked in the color popover survives tool switches.
     if (t === 'highlighter') {
@@ -343,7 +350,7 @@
 </script>
 
 <div class="flex h-full min-h-0 flex-1 flex-col">
-  <div class="flex shrink-0 flex-wrap items-center gap-x-1 gap-y-1.5 border-b border-stone-200 bg-white px-2 py-1.5 sm:px-3 order-2">
+  <div class="toolbar flex shrink-0 flex-wrap items-center gap-x-1 gap-y-1.5 border-b border-stone-200 bg-white px-2 py-1.5 sm:px-3 order-2">
     {#each TOOLS as t (t.id)}
       <button
         class="rounded-lg p-2 {tool === t.id ? 'bg-[#eef2ff] text-[#4f7cff]' : 'text-stone-600 hover:bg-stone-100'}"
@@ -361,7 +368,7 @@
       </div>
     {/if}
 
-    {#if tool !== 'select'}
+    {#if tool === 'pen' || tool === 'highlighter'}
       <div class="mx-1 h-6 w-px bg-stone-200"></div>
 
       <div class="relative">
@@ -463,7 +470,7 @@
   </div>
 
   {#if tool === 'text' && selText}
-    <div class="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1.5 border-b border-stone-200 bg-stone-50 px-3 py-1.5 order-3">
+    <div class="toolbar flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1.5 border-b border-stone-200 bg-stone-50 px-3 py-1.5 order-3">
       <span class="text-xs font-semibold uppercase tracking-wide text-stone-400">Text</span>
 
       <div class="flex items-center gap-2">
@@ -531,7 +538,9 @@
     </div>
   {/if}
 
-  <div class="flex h-12 shrink-0 items-center gap-1 border-b border-stone-200 bg-white px-2 sm:px-3 order-1">
+  <div
+    class="toolbar flex min-h-12 shrink-0 items-center gap-1 border-b border-stone-200 bg-white px-2 pt-[env(safe-area-inset-top)] sm:px-3 order-1"
+  >
     <button class="rounded p-1.5 text-stone-500 hover:bg-stone-100 md:hidden" onclick={onToggleSidebar} aria-label="Menu">
       <Icon d={I.menu} />
     </button>
@@ -580,7 +589,7 @@
     class="min-h-0 flex-1 order-4 {pinch ? 'overflow-hidden' : 'overflow-y-auto'}"
     bind:this={containerRef}
   >
-    <div class="mx-auto flex max-w-5xl flex-col items-center gap-8 px-4 py-8">
+    <div class="mx-auto flex max-w-5xl flex-col items-center gap-8 px-4 pb-[calc(2rem_+_env(safe-area-inset-bottom))] pt-8">
       {#each pages as p (p.id)}
         <div class="relative" data-page-id={p.id}>
           <span class="pointer-events-none absolute -top-6 left-0 text-xs font-medium text-stone-400">Page {p.idx + 1}</span>

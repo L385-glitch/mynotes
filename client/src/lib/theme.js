@@ -14,6 +14,14 @@ export function initialDark() {
 
 export function applyTheme(dark) {
   document.documentElement.classList.toggle('dark', !!dark);
+  // Keep the browser chrome (Android status bar, iOS standalone) in sync.
+  let meta = document.querySelector('meta[name="theme-color"]');
+  if (!meta) {
+    meta = document.createElement('meta');
+    meta.name = 'theme-color';
+    document.head.appendChild(meta);
+  }
+  meta.content = dark ? '#141518' : '#f3f1ec';
 }
 
 export function storeTheme(dark) {

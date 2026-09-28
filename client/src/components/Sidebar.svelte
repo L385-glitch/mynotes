@@ -64,7 +64,7 @@
   }
 </script>
 
-<aside class="flex h-full shrink-0 flex-col border-r border-stone-200 bg-white {minimized ? 'w-12 items-center' : 'w-72'}">
+<aside class="flex h-full shrink-0 flex-col border-r border-stone-200 bg-white pt-[env(safe-area-inset-top)] {minimized ? 'w-12 items-center' : 'w-72'}">
   {#if minimized}
     <div class="flex flex-col items-center gap-3 py-3">
       <button class="rounded p-1.5 text-stone-500 hover:bg-stone-100" title="Show folders" aria-label="Show folders" onclick={onToggleCollapsed}>

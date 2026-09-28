@@ -68,7 +68,7 @@
 
 <div class="flex h-full min-h-0 flex-col">
   <!-- breadcrumb + actions -->
-  <div class="flex h-12 shrink-0 items-center gap-1 border-b border-stone-200 bg-white px-3">
+  <div class="toolbar flex min-h-12 shrink-0 items-center gap-1 border-b border-stone-200 bg-white px-3 pt-[env(safe-area-inset-top)]">
     <button
       class="flex items-center gap-1 rounded px-2 py-1 text-sm font-medium text-stone-600 hover:bg-stone-100"
       onclick={() => onNavigateFolder(null)}

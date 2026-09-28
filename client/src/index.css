@@ -36,10 +36,18 @@
   --accent-soft: #232a3d;
 }
 
-html, body, #app {
+html, body {
   height: 100%;
   margin: 0;
   overscroll-behavior: none;
+}
+
+/* 100dvh keeps the app the full screen height even as the iOS Safari URL bar
+   slides in/out (plain 100% would reflow the whole layout on every scroll).
+   The 100% fallback covers browsers without dynamic viewport units. */
+#app {
+  height: 100%;
+  height: 100dvh;
 }
 
 body {
@@ -47,6 +55,19 @@ body {
   -webkit-font-smoothing: antialiased;
   background: var(--bg);
   color: var(--ink);
+  /* The UI is a drawing tool: no tap flash, no long-press share menu, and no
+     accidental text selection on the chrome (inputs opt back in below). */
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+input,
+textarea,
+.text-edit-overlay {
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 /* Dark theme: remap the light utility classes to the dark tokens. These rules
@@ -93,6 +114,16 @@ body {
   display: block;
 }
 
+/* Hand tool: let the browser scroll the page list natively (one finger =
+   scroll, two fingers = two-finger pan) with native momentum. */
+.ink-canvas.hand-pan {
+  touch-action: pan-x pan-y;
+  cursor: grab;
+}
+.ink-canvas.hand-pan.panning {
+  cursor: grabbing;
+}
+
 .ink-canvas.tool-pen, .ink-canvas.tool-highlighter { cursor: crosshair; }
 .ink-canvas.tool-eraser { cursor: cell; }
 .ink-canvas.tool-text { cursor: text; }
@@ -104,6 +135,23 @@ body {
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* Touch devices: grow the hit area of toolbar controls without changing
+   their visual size (the ::after box is part of the element for hit-testing,
+   so a 32px button becomes a ~48px target, close to Apple's 44pt minimum). */
+@media (pointer: coarse) {
+  .toolbar button {
+    position: relative;
+  }
+  .toolbar button::after {
+    content: '';
+    position: absolute;
+    inset: -8px;
+  }
+  .toolbar input[type='range'] {
+    height: 24px;
+  }
+}
 
 .text-edit-overlay {
   position: absolute;
