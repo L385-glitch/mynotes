@@ -7,7 +7,7 @@
   import FolderModal from './components/FolderModal.svelte';
   import Settings from './components/Settings.svelte';
   import { api } from './lib/api.js';
-  import { getPageCount, getPageSize } from './lib/pdf.js';
+  import { getPageCount, getPageSize, releasePdfDocs } from './lib/pdf.js';
   import { initialDark, applyTheme, storeTheme } from './lib/theme.js';
 
   let folders = $state([]);
@@ -71,11 +71,19 @@
     tags = t;
   }
 
+  // Drop the pdf.js documents + rendered canvases of the open notebook so the
+  // PDF bytes leave browser memory when we leave the editor.
+  function releaseCurrentPdfs() {
+    const ids = new Set(pages.map((p) => p.pdfId).filter((x) => x != null));
+    if (ids.size) releasePdfDocs(ids);
+  }
+
   // Navigate the file explorer to a folder (null = root), closing any open notebook.
   async function navigateFolder(id) {
     currentFolderId = id;
     if (selectedNotebookId != null) {
       await editorApi?.flush?.();
+      releaseCurrentPdfs();
       selectedNotebookId = null;
       pages = [];
     }
@@ -85,6 +93,7 @@
   // Leave the editor and return to the folder the notebook lives in.
   async function backToFolders() {
     await editorApi?.flush?.();
+    releaseCurrentPdfs();
     selectedNotebookId = null;
     pages = [];
     currentFolderId = returnFolderId ?? null;
@@ -104,10 +113,13 @@
   async function selectNotebook(id, targetPageId = null) {
     if (id === selectedNotebookId) return;
     const tok = ++navToken;
+    const leavingIds = new Set(pages.map((p) => p.pdfId).filter((x) => x != null));
     selectedNotebookId = id;
     sidebarOpen = false;
-    // Persist the notebook we're leaving before its pages are swapped out.
+    // Persist the notebook we're leaving before its pages are swapped out,
+    // then free its PDFs so the incoming notebook's memory is not stacked on top.
     await editorApi?.flush?.();
+    if (leavingIds.size) releasePdfDocs(leavingIds);
     const nb = notebooks.find((n) => n.id === id);
     returnFolderId = nb ? nb.folderId : null;
     pages = await loadFullPages(id, tok);
@@ -192,6 +204,7 @@
   function onModalDeleted(id) {
     notebooks = notebooks.filter((n) => n.id !== id);
     if (selectedNotebookId === id) {
+      releaseCurrentPdfs();
       selectedNotebookId = null;
       pages = [];
     }
@@ -206,6 +219,11 @@
     // its notebooks; a full refresh keeps the tree consistent.
     if (currentFolderId === id) currentFolderId = null;
     await refresh();
+    if (selectedNotebookId != null && !notebooks.some((n) => n.id === selectedNotebookId)) {
+      releaseCurrentPdfs();
+      selectedNotebookId = null;
+      pages = [];
+    }
   }
 
   onMount(() => {

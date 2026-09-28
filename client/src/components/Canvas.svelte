@@ -841,6 +841,9 @@
       window.removeEventListener('resize', resize);
       window.removeEventListener('keydown', onDeleteKey);
       clearHoldTimer();
+      // The page is going away (notebook closed / page deleted): commit a
+      // pending text edit and persist anything unsaved.
+      commitEdit();
       cancelSave();
       if (dirty && currentPageId != null) flushSave(currentPageId);
     };
@@ -849,7 +852,10 @@
   // Expose this page's imperative API to the editor (keyed by page id).
   $effect(() => {
     const id = page?.id;
-    if (id != null) onRegister?.(id, { undo, redo, flushSave, commitEdit, updateText });
+    if (id != null) {
+      onRegister?.(id, { undo, redo, flushSave, commitEdit, updateText });
+      return () => onRegister?.(id, null);
+    }
   });
 
   let editStyle = $derived(

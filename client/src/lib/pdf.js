@@ -2,17 +2,24 @@ import { getDocument, GlobalWorkerOptions, Util } from 'pdfjs-dist';
 
 GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
 
-const docCache = new Map(); // pdfId -> { pdf, pages: Map(key -> canvas) }
+const docCache = new Map(); // pdfId -> pdf.js document
 const textCache = new Map(); // `${pdfId}:${pageNum}` -> [{x,y,w,h}]
+
+// Rendered page canvases are shared by every consumer (editor pages, file
+// explorer thumbnails, export) and bounded by a global pixel budget so a big
+// PDF can never exhaust device memory. Oldest canvases are evicted first.
+const canvasLru = new Map(); // `${pdfId}:${pageNum}:${res}` -> canvas
+let canvasPixels = 0;
+const MAX_CANVAS_PIXELS = 32_000_000; // ~128 MB of RGBA canvas memory
 
 export async function getPdfDoc(pdfId) {
   const cached = docCache.get(pdfId);
-  if (cached) return cached.pdf;
+  if (cached) return cached;
   const res = await fetch(`/api/pdfs/${pdfId}/file`);
   if (!res.ok) throw new Error(`failed to load pdf (${res.status})`);
   const data = new Uint8Array(await res.arrayBuffer());
   const pdf = await getDocument({ data }).promise;
-  docCache.set(pdfId, { pdf, pages: new Map() });
+  docCache.set(pdfId, pdf);
   return pdf;
 }
 
@@ -31,9 +38,13 @@ export async function getPageCount(pdfId) {
 
 // Render a PDF page to an offscreen canvas. `res` = canvas pixels per page-coordinate unit.
 export async function renderPdfPage(pdfId, pageNum, res = 2) {
-  const entry = docCache.get(pdfId);
-  const key = `${pageNum}:${res}`;
-  if (entry?.pages.has(key)) return entry.pages.get(key);
+  const key = `${pdfId}:${pageNum}:${res}`;
+  const hit = canvasLru.get(key);
+  if (hit) {
+    canvasLru.delete(key);
+    canvasLru.set(key, hit);
+    return hit;
+  }
   const pdf = await getPdfDoc(pdfId);
   const page = await pdf.getPage(pageNum);
   const vp = page.getViewport({ scale: res * (96 / 72) });
@@ -42,8 +53,49 @@ export async function renderPdfPage(pdfId, pageNum, res = 2) {
   canvas.height = Math.ceil(vp.height);
   const ctx = canvas.getContext('2d');
   await page.render({ canvasContext: ctx, viewport: vp }).promise;
-  if (entry) entry.pages.set(key, canvas);
+  // A concurrent call may have rendered the same page while we were waiting;
+  // keep the first result and let this one be garbage collected.
+  const existing = canvasLru.get(key);
+  if (existing) {
+    canvasLru.delete(key);
+    canvasLru.set(key, existing);
+    return existing;
+  }
+  canvasLru.set(key, canvas);
+  canvasPixels += canvas.width * canvas.height;
+  evictCanvases();
   return canvas;
+}
+
+// Drop the cache's reference to a canvas. The canvas itself is NOT cleared:
+// a mounted page or thumbnail may still be drawing from it, and its memory
+// is bounded by the number of mounted pages regardless.
+function freeCanvas(key) {
+  canvasPixels -= canvasLru.get(key).width * canvasLru.get(key).height;
+  canvasLru.delete(key);
+}
+
+function evictCanvases() {
+  while (canvasPixels > MAX_CANVAS_PIXELS && canvasLru.size > 1) {
+    freeCanvas(canvasLru.keys().next().value);
+  }
+}
+
+// Free a PDF's document, rendered canvases and text layout. Called when the
+// notebook that uses the PDF is closed, so the file bytes leave memory too.
+export function releasePdfDocs(pdfIds) {
+  for (const pdfId of pdfIds) {
+    const pdf = docCache.get(pdfId);
+    if (!pdf) continue;
+    docCache.delete(pdfId);
+    for (const key of [...canvasLru.keys()]) {
+      if (key.startsWith(pdfId + ':')) freeCanvas(key);
+    }
+    for (const key of [...textCache.keys()]) {
+      if (key.startsWith(pdfId + ':')) textCache.delete(key);
+    }
+    pdf.destroy();
+  }
 }
 
 // Text lines on a PDF page as page-coordinate boxes ({x,y,w,h}, 96 dpi, top-left

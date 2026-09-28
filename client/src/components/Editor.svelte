@@ -166,7 +166,8 @@
   }
 
   function registerApi(pageId, api_) {
-    pageApis[pageId] = api_;
+    if (api_ == null) delete pageApis[pageId];
+    else pageApis[pageId] = api_;
   }
 
   function onPageActive(pageId) {
