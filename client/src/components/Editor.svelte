@@ -213,13 +213,6 @@
   });
 
   const I = {
-    select: ['M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z'],
-    hand: [
-      'M18 11V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2',
-      'M14 10V4a2 2 0 0 0-2-2 2 2 0 0 0-2 2v2',
-      'M10 10.5V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2v8',
-      'M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15',
-    ],
     pen: ['M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z'],
     highlighter: ['m9 11-6 6v3h9l3-3', 'm22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4'],
     eraser: ['m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21', 'M22 21H7', 'm5 11 9 9'],
@@ -241,11 +234,9 @@
   };
 
   const TOOLS = [
-    { id: 'select', icon: I.select, label: 'Select' },
-    { id: 'hand', icon: I.hand, label: 'Hand (scroll the page)' },
-    { id: 'pen', icon: I.pen, label: 'Pen' },
-    { id: 'highlighter', icon: I.highlighter, label: 'Highlighter' },
-    { id: 'eraser', icon: I.eraser, label: 'Eraser' },
+    { id: 'pen', icon: I.pen, label: 'Pen (stylus draws · finger scrolls & selects)' },
+    { id: 'highlighter', icon: I.highlighter, label: 'Highlighter (stylus draws · finger scrolls & selects)' },
+    { id: 'eraser', icon: I.eraser, label: 'Eraser (stylus erases · finger scrolls & selects)' },
     { id: 'text', icon: I.text, label: 'Text' },
   ];
 
@@ -262,7 +253,6 @@
     tool = t;
     bgOpen = false;
     colorOpen = false;
-    if (t === 'select' || t === 'hand') return;
     // Only reset when crossing between the highlighter and ink palettes, so a
     // custom color picked in the color popover survives tool switches.
     if (t === 'highlighter') {
@@ -473,7 +463,7 @@
     </div>
   </div>
 
-  {#if tool === 'text' && selText}
+  {#if selText}
     <div class="toolbar flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1.5 border-b border-stone-200 bg-stone-50 px-3 py-1.5 order-3">
       <span class="text-xs font-semibold uppercase tracking-wide text-stone-400">Text</span>
 

@@ -45,8 +45,12 @@
 
   const RES = 2;
   const SAVE_INTERVAL = 2000;
+  // Screen-space distance (px) below which a touch/click is a "tap" (select /
+  // add text) rather than a drag (scroll / draw / move).
+  const TAP_THRESHOLD = 6;
   const pointers = new Map();
   let gesture = null;
+  let momentumRaf = null;
   let rafPending = false;
   let contentDirty = false;
   const undoStack = [];
@@ -186,14 +190,11 @@
     requestDraw();
   });
 
-  // Leaving the text tool clears any selection and commits a pending edit.
-  // Leaving the select tool clears the stroke selection.
+  // Switching away from the text tool commits a pending edit. Selections
+  // (stroke or text) persist across tools: there is no select tool anymore,
+  // a tap selects in any tool.
   $effect(() => {
-    if (tool !== 'text') {
-      selected = null;
-      if (editing) commitEdit();
-    }
-    if (tool !== 'select') selStroke = null;
+    if (tool !== 'text' && editing) commitEdit();
   });
 
   // Report the selected text item (or null) to the editor so it can show
@@ -352,27 +353,161 @@
     }
   }
 
-  // Select tool: pick a stroke (topmost wins) or grab one of the selected
-  // stroke's resize handles.
-  function selectDown(p, e) {
+  // Topmost stroke under a page point (null when none).
+  function hitStroke(p) {
+    return [...strokes].reverse().find((s) => strokeHitSelect(s, p.x, p.y, 8 / zoom)) ?? null;
+  }
+
+  // Topmost text item under a page point (null when none).
+  function hitText(p) {
+    return [...texts].reverse().find((t) => textAt(t, p.x, p.y)) ?? null;
+  }
+
+  // Resize handle of the currently selected stroke under a page point.
+  function hitSelHandle(p) {
+    if (!selStroke) return null;
+    const s = strokes.find((o) => o.id === selStroke);
+    if (!s) return null;
+    return getHandles(s).find((h) => Math.hypot(p.x - h.x, p.y - h.y) < 10 / zoom) ?? null;
+  }
+
+  // Select a text item and arm a move/resize gesture based on where it was
+  // touched (right/left border = resize width, top-left corner = move
+  // immediately, body = potential drag-to-move).
+  function textItemDown(p, e, hit) {
+    const b = textBounds(hit);
+    const edge = 14 / zoom;
+    const inVertRange = p.y >= b.y - edge && p.y <= b.y + b.h + edge;
+    const onRightEdge = p.x >= b.x + b.w - 2 && inVertRange;
+    const onLeftEdge = p.x <= b.x + 2 && inVertRange;
+    const cornerTL = Math.hypot(p.x - b.x, p.y - b.y) < edge;
+    selected = hit.id;
+    selStroke = null;
+    if (onRightEdge) {
+      gesture = { type: 'resize-text', side: 'right', id: hit.id, origW: hit.w || 320, startPage: p, started: false };
+    } else if (cornerTL) {
+      gesture = { type: 'maybe-move-text', id: hit.id, startX: e.clientX, startY: e.clientY, origX: hit.x, origY: hit.y, threshold: 0 };
+    } else if (onLeftEdge) {
+      gesture = { type: 'resize-text', side: 'left', id: hit.id, origX: hit.x, origW: hit.w || 320, startPage: p, started: false };
+    } else {
+      gesture = { type: 'maybe-move-text', id: hit.id, startX: e.clientX, startY: e.clientY, origX: hit.x, origY: hit.y };
+    }
+    requestDraw();
+  }
+
+  // Text tool: tap an existing item to select/move/resize it, tap empty space
+  // to start a new one.
+  function textDown(p, e) {
+    e.preventDefault();
+    if (editing) commitEdit();
+    const hit = hitText(p);
+    if (hit) {
+      textItemDown(p, e, hit);
+    } else if (selected) {
+      selected = null;
+      requestDraw();
+    } else {
+      startTextEdit(p.x, p.y);
+    }
+  }
+
+  // Begin a freehand stroke with the active ink tool.
+  function startDraw(p, e) {
+    clearHoldTimer();
+    const rawPoints = [[p.x, p.y, e.pressure || 0.5]];
+    live = {
+      id: uid(),
+      tool,
+      color,
+      size: tool === 'highlighter' ? size * 5 : size,
+      rawPoints,
+      points: rawPoints,
+      shape: null,
+    };
+    requestDraw();
+  }
+
+  // Finger (touch): navigate the page and select objects. There is no hand or
+  // select tool anymore — one finger scrolls (or moves/resizes a selected
+  // object) and a tap on an object selects it, in any tool.
+  function touchDown(p, e) {
+    const handle = hitSelHandle(p);
+    if (handle) {
+      const s = strokes.find((o) => o.id === selStroke);
+      gesture = { type: 'resize-stroke', id: s.id, handle: handle.id, orig: s, started: false };
+      return;
+    }
     if (selStroke) {
       const s = strokes.find((o) => o.id === selStroke);
-      if (s) {
-        const h = getHandles(s).find((h) => Math.hypot(p.x - h.x, p.y - h.y) < 10 / zoom);
-        if (h) {
-          gesture = { type: 'resize-stroke', id: s.id, handle: h.id, orig: s, started: false };
+      if (s && strokeHitSelect(s, p.x, p.y, 8 / zoom)) {
+        // A finger drag on the selected stroke moves it (not scrolls).
+        gesture = { type: 'maybe-move-stroke', id: s.id, startX: e.clientX, startY: e.clientY, orig: s };
+        return;
+      }
+    }
+    const t = hitText(p);
+    if (t) {
+      textItemDown(p, e, t);
+      return;
+    }
+    const s = hitStroke(p);
+    if (s) {
+      // Tap selects the stroke; a drag scrolls the page instead.
+      gesture = { type: 'maybe-select-or-scroll', id: s.id, startX: e.clientX, startY: e.clientY };
+      return;
+    }
+    // Empty space: tap deselects (or starts a text field with the text tool);
+    // a drag scrolls the page.
+    if (tool === 'text') {
+      gesture = { type: 'maybe-add-text-or-scroll', startX: e.clientX, startY: e.clientY, page: p };
+    } else {
+      gesture = { type: 'maybe-scroll', startX: e.clientX, startY: e.clientY };
+    }
+  }
+
+  // Stylus or mouse: run the active tool. The mouse additionally selects
+  // objects on a tap/click (the select tool is gone); the stylus only draws.
+  function toolDown(p, e, allowSelect) {
+    if (allowSelect) {
+      const handle = hitSelHandle(p);
+      if (handle) {
+        const s = strokes.find((o) => o.id === selStroke);
+        gesture = { type: 'resize-stroke', id: s.id, handle: handle.id, orig: s, started: false };
+        return;
+      }
+      if (selStroke) {
+        const s = strokes.find((o) => o.id === selStroke);
+        if (s && strokeHitSelect(s, p.x, p.y, 8 / zoom)) {
+          gesture = { type: 'maybe-move-stroke', id: s.id, startX: e.clientX, startY: e.clientY, orig: s };
           return;
         }
       }
+      const t = hitText(p);
+      if (t) {
+        textItemDown(p, e, t);
+        return;
+      }
+      const s = hitStroke(p);
+      if (s) {
+        // Click selects the stroke; a drag still draws on top of it.
+        gesture = { type: 'maybe-select-or-draw', id: s.id, startX: e.clientX, startY: e.clientY, page: p };
+        return;
+      }
     }
-    const hit = [...strokes].reverse().find((s) => strokeHitSelect(s, p.x, p.y, 8 / zoom));
-    if (hit) {
-      selStroke = hit.id;
-      gesture = { type: 'maybe-move-stroke', id: hit.id, startX: e.clientX, startY: e.clientY, orig: hit };
+    if (tool === 'text') {
+      textDown(p, e);
+    } else if (tool === 'eraser') {
+      gesture = { type: 'erase' };
+      eraserPos = p;
+      eraseAt(p.x, p.y);
+      requestDraw();
+    } else if (allowSelect) {
+      // Mouse on empty space (no object under the cursor): a tap deselects
+      // (there is no select tool anymore); a drag still draws.
+      gesture = { type: 'maybe-deselect-or-draw', startX: e.clientX, startY: e.clientY, page: p };
     } else {
-      selStroke = null;
+      startDraw(p, e);
     }
-    requestDraw();
   }
 
   // Nearest scrollable ancestor (the editor's page list).
@@ -386,25 +521,51 @@
     return null;
   }
 
+  // One-finger scroll has no native momentum (touch-action is none), so we add
+  // a little inertia: on release, keep scrolling with the finger's velocity,
+  // decaying it over ~a second. GoodNotes-style feel.
+  function stopMomentum() {
+    if (momentumRaf) {
+      cancelAnimationFrame(momentumRaf);
+      momentumRaf = null;
+    }
+  }
+  function startMomentum(fingerVy) {
+    stopMomentum();
+    const sc = scrollAncestor();
+    if (!sc) return;
+    let velocity = fingerVy; // px per ms, positive = finger moving down
+    if (Math.abs(velocity) < 0.05) return;
+    let last = performance.now();
+    function step(now) {
+      const dt = now - last;
+      last = now;
+      sc.scrollTop -= velocity * dt;
+      velocity *= Math.pow(0.99, dt / 16.67);
+      if (Math.abs(velocity) < 0.01) {
+        momentumRaf = null;
+        return;
+      }
+      momentumRaf = requestAnimationFrame(step);
+    }
+    momentumRaf = requestAnimationFrame(step);
+  }
+
   function onPointerDown(e) {
     const isMouse = e.pointerType === 'mouse';
+    const isTouch = e.pointerType === 'touch';
     if (isMouse && e.button !== 0) return;
-    if (tool === 'hand') {
-      // Touch: the browser scrolls the page list natively (touch-action:
-      // pan-x pan-y), so there is nothing to do here. Mouse: drag manually.
-      if (isMouse) {
-        canvasEl.setPointerCapture(e.pointerId);
-        pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-        canvasEl.classList.add('panning');
-        gesture = { type: 'pan', lastX: e.clientX, lastY: e.clientY };
-      }
-      return;
-    }
+    stopMomentum();
+
     if (!rendered) onNeedRender?.(page?.id);
     if (editing) commitEdit();
     canvasEl.setPointerCapture(e.pointerId);
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     onActive?.(page?.id);
+
+    // Two-finger touch: pinch-zoom + two-finger pan. The editor locks the
+    // scroll container for the whole gesture so the view can't jump to another
+    // page mid-zoom.
     if (pointers.size === 2) {
       if (live) {
         live = null;
@@ -420,79 +581,58 @@
       onPinchStart?.({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
       return;
     }
+
     const p = toPage(e);
-    if (tool === 'select') {
-      selectDown(p, e);
+    if (isTouch) {
+      touchDown(p, e);
       return;
     }
-    if (tool === 'text') {
-      // Cancel the pointerdown so the browser doesn't fire the compatibility
-      // mousedown event — its default action would steal focus from the
-      // freshly-focused text overlay and immediately blur (commit) it.
-      e.preventDefault();
-      if (editing) commitEdit();
-      // Hit-test existing text (topmost = last in the array wins).
-      const hit = [...texts].reverse().find((t) => textAt(t, p.x, p.y));
-      if (hit) {
-        const b = textBounds(hit);
-        const edge = 14 / zoom;
-        const inVertRange = p.y >= b.y - edge && p.y <= b.y + b.h + edge;
-        // One-sided border zones so clicks inside the box still select/move.
-        const onRightEdge = p.x >= b.x + b.w - 2 && inVertRange;
-        const onLeftEdge = p.x <= b.x + 2 && inVertRange;
-        const cornerTL = Math.hypot(p.x - b.x, p.y - b.y) < edge;
-        selected = hit.id;
-        if (onRightEdge) {
-          // Right border → resize width (font size stays independent).
-          gesture = { type: 'resize-text', side: 'right', id: hit.id, origW: hit.w || 320, startPage: p, started: false };
-        } else if (cornerTL) {
-          // Top-left corner → dedicated drag handle, moves immediately.
-          gesture = { type: 'maybe-move-text', id: hit.id, startX: e.clientX, startY: e.clientY, origX: hit.x, origY: hit.y, threshold: 0 };
-        } else if (onLeftEdge) {
-          // Left border → resize width, keeping the right edge anchored.
-          gesture = { type: 'resize-text', side: 'left', id: hit.id, origX: hit.x, origW: hit.w || 320, startPage: p, started: false };
-        } else {
-          // Body → select, and a potential drag-to-move.
-          gesture = { type: 'maybe-move-text', id: hit.id, startX: e.clientX, startY: e.clientY, origX: hit.x, origY: hit.y };
-        }
-      } else if (selected) {
-        selected = null;
-        requestDraw();
-      } else {
-        startTextEdit(p.x, p.y);
-      }
-    } else if (tool === 'eraser') {
-      gesture = { type: 'erase' };
-      eraserPos = p;
-      eraseAt(p.x, p.y);
-      requestDraw();
-    } else {
-      clearHoldTimer();
-      const rawPoints = [[p.x, p.y, e.pressure || 0.5]];
-      live = {
-        id: uid(),
-        tool,
-        color,
-        size: tool === 'highlighter' ? size * 5 : size,
-        rawPoints,
-        points: rawPoints,
-        shape: null,
-      };
-      requestDraw();
-    }
+    // Stylus: only the active tool. Mouse: active tool + tap/click selects.
+    toolDown(p, e, isMouse);
   }
 
   function onPointerMove(e) {
     if (!pointers.has(e.pointerId)) return;
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    // Tap-or-drag gestures: once the finger/cursor moves past the tap
+    // threshold, commit to the drag action (scroll for touch, draw for mouse)
+    // instead of the tap action (select / add text).
+    if (
+      gesture &&
+      (gesture.type === 'maybe-scroll' ||
+        gesture.type === 'maybe-select-or-scroll' ||
+        gesture.type === 'maybe-add-text-or-scroll' ||
+        gesture.type === 'maybe-select-or-draw' ||
+        gesture.type === 'maybe-deselect-or-draw')
+    ) {
+      const dx = e.clientX - gesture.startX;
+      const dy = e.clientY - gesture.startY;
+      if (Math.hypot(dx, dy) < TAP_THRESHOLD) return;
+      if (gesture.type === 'maybe-select-or-draw' || gesture.type === 'maybe-deselect-or-draw') {
+        // Mouse: the drag draws a new stroke starting where the user pressed.
+        const startPage = gesture.page;
+        gesture = null;
+        startDraw(startPage ?? toPage(e), e);
+        return;
+      }
+      // Touch: the drag scrolls the page (a tap would have selected / added).
+      gesture = { type: 'pan', lastX: e.clientX, lastY: e.clientY, lastT: performance.now(), vy: 0 };
+      canvasEl.classList.add('panning');
+      return;
+    }
     if (gesture?.type === 'pan') {
       const sc = scrollAncestor();
       if (sc) {
         sc.scrollLeft -= e.clientX - gesture.lastX;
         sc.scrollTop -= e.clientY - gesture.lastY;
       }
+      // Track the finger's velocity so we can fling with momentum on release.
+      const now = performance.now();
+      const dt = now - (gesture.lastT || now);
+      if (dt > 0) gesture.vy = (e.clientY - gesture.lastY) / dt;
       gesture.lastX = e.clientX;
       gesture.lastY = e.clientY;
+      gesture.lastT = now;
       return;
     }
     if (gesture?.type === 'pinch' && pointers.size >= 2) {
@@ -631,8 +771,43 @@
   function onPointerEnd(e) {
     pointers.delete(e.pointerId);
     if (gesture?.type === 'pan') {
+      const vy = gesture.vy || 0;
       gesture = null;
       canvasEl.classList.remove('panning');
+      startMomentum(vy);
+      return;
+    }
+    // Tap (no drag) on a tap-or-drag gesture: commit the tap action.
+    if (gesture?.type === 'maybe-scroll') {
+      // Tap on empty space: clear any selection.
+      gesture = null;
+      selected = null;
+      selStroke = null;
+      requestDraw();
+      return;
+    }
+    if (gesture?.type === 'maybe-select-or-scroll' || gesture?.type === 'maybe-select-or-draw') {
+      // Tap on a stroke: select it (and drop any text selection).
+      const id = gesture.id;
+      gesture = null;
+      selStroke = id;
+      selected = null;
+      requestDraw();
+      return;
+    }
+    if (gesture?.type === 'maybe-deselect-or-draw') {
+      // Tap on empty space: clear any selection.
+      gesture = null;
+      selected = null;
+      selStroke = null;
+      requestDraw();
+      return;
+    }
+    if (gesture?.type === 'maybe-add-text-or-scroll') {
+      // Tap on empty space with the text tool: start a new text field.
+      const page = gesture.page;
+      gesture = null;
+      startTextEdit(page.x, page.y);
       return;
     }
     if (gesture?.type === 'pinch' && pointers.size < 2) {
@@ -723,9 +898,8 @@
     scheduleSave(page?.id);
   }
 
-  // Double-click an existing text item to edit its contents in place.
+  // Double-click an existing text item to edit its contents in place (any tool).
   function onDoubleClick(e) {
-    if (tool !== 'text') return;
     const p = toPage(e);
     const hit = [...texts].reverse().find((t) => textAt(t, p.x, p.y));
     if (!hit) return;
@@ -807,9 +981,9 @@
     requestDraw();
   }
 
-  // Delete the selected stroke (select tool only).
+  // Delete the currently selected stroke (works in any tool).
   function deleteSelectedStroke() {
-    if (tool !== 'select' || !selStroke) return;
+    if (!selStroke) return;
     pushUndo();
     strokes = strokes.filter((o) => o.id !== selStroke);
     selStroke = null;
@@ -857,7 +1031,7 @@
     if (e.key !== 'Delete' && e.key !== 'Backspace') return;
     const el = document.activeElement;
     if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
-    if (tool === 'select' && selStroke) {
+    if (selStroke) {
       e.preventDefault();
       deleteSelectedStroke();
     }
@@ -874,6 +1048,7 @@
       window.removeEventListener('resize', resize);
       window.removeEventListener('keydown', onDeleteKey);
       clearHoldTimer();
+      stopMomentum();
       // The page is going away (notebook closed / page deleted): commit a
       // pending text edit and persist anything unsaved.
       commitEdit();
@@ -898,8 +1073,9 @@
   );
 
   // Screen-space box of the selected text item (for the selection chrome).
+  // Shown in any tool: a tap selects a text item regardless of the active tool.
   const selectedBox = $derived.by(() => {
-    if (!selected || tool !== 'text' || editing) return null;
+    if (!selected || editing) return null;
     const t = texts.find((o) => o.id === selected);
     if (!t) return null;
     const b = textBounds(t);
@@ -910,6 +1086,16 @@
       height: b.h * zoom,
     };
   });
+
+  // Screen position for the delete button shown above a selected stroke
+  // (touch devices have no Delete key).
+  const selStrokeDel = $derived.by(() => {
+    if (!selStroke) return null;
+    const s = strokes.find((o) => o.id === selStroke);
+    if (!s) return null;
+    const bb = strokeBounds(s);
+    return { left: bb.maxx * zoom + 10, top: bb.miny * zoom - 40 };
+  });
 </script>
 
 <div
@@ -918,7 +1104,7 @@
   bind:this={containerEl}
 >
   <canvas
-    class="ink-canvas tool-{tool} {tool === 'hand' ? 'hand-pan' : ''}"
+    class="ink-canvas tool-{tool}"
     bind:this={canvasEl}
     style="position:absolute;left:0;top:0;width:{page.width * RES}px;height:{page.height * RES}px;transform:scale({zoom / RES});transform-origin:top left"
     onpointerdown={onPointerDown}
@@ -937,6 +1123,17 @@
       <div class="text-handle-edge text-handle-edge-right" title="Drag to resize width"></div>
       <div class="text-handle-resize"></div>
     </div>
+  {/if}
+  {#if selStrokeDel}
+    <button
+      class="stroke-delete-btn"
+      style="left:{selStrokeDel.left}px;top:{selStrokeDel.top}px"
+      title="Delete stroke"
+      aria-label="Delete stroke"
+      onclick={deleteSelectedStroke}
+    >
+      ✕
+    </button>
   {/if}
   {#if editing}
     <textarea

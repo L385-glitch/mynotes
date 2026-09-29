@@ -114,23 +114,13 @@ textarea,
   display: block;
 }
 
-/* Hand tool: let the browser scroll the page list natively (one finger =
-   scroll, two fingers = two-finger pan) with native momentum. */
-.ink-canvas.hand-pan {
-  touch-action: pan-x pan-y;
-  cursor: grab;
-}
-.ink-canvas.hand-pan.panning {
-  cursor: grabbing;
-}
-
+/* Mouse cursors per active tool (touch devices ignore these). One-finger
+   touch always scrolls/selects and two-finger touch zooms, regardless of the
+   active tool, so no tool needs a "grab" cursor anymore. */
 .ink-canvas.tool-pen, .ink-canvas.tool-highlighter { cursor: crosshair; }
 .ink-canvas.tool-eraser { cursor: cell; }
 .ink-canvas.tool-text { cursor: text; }
-.ink-canvas.tool-select { cursor: grab; }
-.ink-canvas.tool-select.panning { cursor: grabbing; }
-.ink-canvas.space-pan, .ink-canvas.space-pan.panning { cursor: grab; }
-.ink-canvas.space-pan.panning { cursor: grabbing; }
+.ink-canvas.panning { cursor: grabbing; }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 4px; }
@@ -204,6 +194,29 @@ textarea,
   width: 8px;
   height: 8px;
   background: radial-gradient(circle, var(--accent) 1px, transparent 1.3px) 0 0 / 4px 4px;
+}
+
+/* Delete button shown above a selected stroke (touch has no Delete key). */
+.stroke-delete-btn {
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface);
+  color: #dc2626;
+  border: 1.5px solid #dc2626;
+  border-radius: 50%;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  z-index: 16;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+}
+.stroke-delete-btn:active {
+  background: #dc2626;
+  color: #fff;
 }
 
 /* Left/right border handles for resizing the text field's width. */
