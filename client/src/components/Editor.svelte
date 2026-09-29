@@ -138,31 +138,33 @@
     forcedRenderIds = new Set(forcedRenderIds).add(id);
   }
 
-  function onPinchStart() {
-    pinch = { zLast: zoom, lastY: null };
+  function onPinchStart(mid) {
+    const el = containerRef;
+    const top = el ? el.getBoundingClientRect().top : 0;
+    pinch = {
+      z0: zoom,
+      s0: el ? el.scrollTop : 0,
+      anchorY0: mid ? mid.y - top : 0,
+    };
   }
 
   function onPinchMove(z, midX, midY) {
     if (!pinch) return;
     const el = containerRef;
     const z1 = clampZoom(z);
-    const dy = pinch.lastY != null ? midY - pinch.lastY : 0;
-    let anchorY = null;
-    let factor = 1;
-    if (el) {
-      anchorY = midY - el.getBoundingClientRect().top;
-      factor = pinch.zLast === z1 ? 1 : z1 / pinch.zLast;
-    }
-    pinch = { zLast: z1, lastY: midY };
     zoom = z1;
-    if (anchorY != null) {
-      // Zoom about the midpoint, then follow the midpoint's movement
-      // (two-finger pan scrolls the stack). Applied after layout so rapid
-      // successive events compose against the latest scroll position.
-      tick().then(() => {
-        if (containerRef) containerRef.scrollTop = (containerRef.scrollTop + anchorY) * factor - anchorY + dy;
-      });
-    }
+    if (!el) return;
+    // Keep the content point that was under the fingers at pinch start under the
+    // fingers' current midpoint (zoom + two-finger pan in one step). Anchor to the
+    // fixed start values, not the live scrollTop: the browser re-lays-out and
+    // clamps scrollTop the moment zoom changes, so reading it in the async tick
+    // below had drifted the zoom toward the page center.
+    const factor = pinch.z0 === z1 ? 1 : z1 / pinch.z0;
+    const top = el.getBoundingClientRect().top;
+    const target = (pinch.s0 + pinch.anchorY0) * factor - (midY - top);
+    tick().then(() => {
+      if (containerRef) containerRef.scrollTop = target;
+    });
   }
 
   function onPinchEnd() {

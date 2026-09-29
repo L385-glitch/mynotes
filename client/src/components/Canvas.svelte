@@ -534,14 +534,17 @@
     stopMomentum();
     const sc = scrollAncestor();
     if (!sc) return;
-    let velocity = fingerVy; // px per ms, positive = finger moving down
+    // Cap the fling speed so a fast flick can't launch the page, and decay it
+    // fast (~1s) so the scroll settles quickly. Touching down stops it
+    // instantly (stopMomentum on pointerdown), so the user can brake anytime.
+    let velocity = Math.max(-5, Math.min(5, fingerVy)); // px per ms
     if (Math.abs(velocity) < 0.05) return;
     let last = performance.now();
     function step(now) {
-      const dt = now - last;
+      const dt = Math.min(64, now - last);
       last = now;
       sc.scrollTop -= velocity * dt;
-      velocity *= Math.pow(0.99, dt / 16.67);
+      velocity *= Math.pow(0.9, dt / 16.67);
       if (Math.abs(velocity) < 0.01) {
         momentumRaf = null;
         return;
