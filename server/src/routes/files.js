@@ -24,9 +24,21 @@ export default function files(app) {
     if (!pdf || !fs.existsSync(pdf.path)) {
       return reply.code(404).send({ error: 'pdf not found' });
     }
+    // Header values may only contain latin-1 bytes, so non-latin-1 filenames
+    // (emoji, CJK, …) go through RFC 5987's filename* form with an ASCII fallback.
+    const ascii = pdf.name.replace(/[^\x20-\x7e]/g, '').replace(/"/g, '') || 'document.pdf';
     reply.header('Content-Type', 'application/pdf');
-    reply.header('Content-Disposition', `inline; filename="${pdf.name}"`);
-    return reply.send(fs.createReadStream(pdf.path));
+    reply.header(
+      'Content-Disposition',
+      `inline; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(pdf.name)}`
+    );
+    const stream = fs.createReadStream(pdf.path);
+    stream.on('error', (err) => {
+      req.log.error(err);
+      if (!reply.sent) reply.code(500).send({ error: 'failed to read pdf' });
+      else reply.raw.destroy();
+    });
+    return reply.send(stream);
   });
 
   app.delete('/api/pdfs/:id', (req, reply) => {
