@@ -24,10 +24,12 @@
   let sidebarOpen = $state(false);
   let sidebarCollapsed = $state(initialSidebarCollapsed());
   let importing = $state(false);
+  let importProgress = $state(null);
   let dark = $state(initialDark());
   let settingsOpen = $state(false);
   let editorApi = $state(null);
   let fileInput;
+  let folderInput;
   let navToken = 0;
 
   // Keep the <html> class + persisted preference in sync with the toggle.
@@ -168,32 +170,87 @@
     fileInput?.click();
   }
 
+  function importFolder() {
+    folderInput?.click();
+  }
+
+  // Upload one PDF and turn it into a notebook in the given folder.
+  async function importPdfFile(file, folderId) {
+    const { id: pdfId, name } = await api.uploadPdf(file);
+    const count = await getPageCount(pdfId);
+    const nb = await api.createNotebook(name.replace(/\.pdf$/i, ''), folderId);
+    const initial = await api.listPages(nb.id);
+    const blankId = initial.length ? initial[0].id : null;
+    // Create the PDF pages BEFORE removing the initial blank page: deleting a
+    // page cleans up orphaned PDFs, and the upload is orphaned until a page
+    // references it — deleting the blank page first would wipe the PDF and
+    // make the next createPage fail its foreign key.
+    for (let i = 0; i < count; i++) {
+      const { w, h } = await getPageSize(pdfId, i + 1);
+      await api.createPage(nb.id, { background: 'pdf', pdfId, pdfPage: i, width: w, height: h });
+    }
+    if (blankId !== null) await api.deletePage(blankId);
+    return nb;
+  }
+
   async function onPdfFile(e) {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
     importing = true;
     try {
-      const { id: pdfId, name } = await api.uploadPdf(file);
-      const count = await getPageCount(pdfId);
-      const nb = await api.createNotebook(name.replace(/\.pdf$/i, ''), currentFolderId);
-      const initial = await api.listPages(nb.id);
-      const blankId = initial.length ? initial[0].id : null;
-      // Create the PDF pages BEFORE removing the initial blank page: deleting a
-      // page cleans up orphaned PDFs, and the upload is orphaned until a page
-      // references it — deleting the blank page first would wipe the PDF and
-      // make the next createPage fail its foreign key.
-      for (let i = 0; i < count; i++) {
-        const { w, h } = await getPageSize(pdfId, i + 1);
-        await api.createPage(nb.id, { background: 'pdf', pdfId, pdfPage: i, width: w, height: h });
-      }
-      if (blankId !== null) await api.deletePage(blankId);
+      const nb = await importPdfFile(file, currentFolderId);
       await refresh();
       await selectNotebook(nb.id);
     } catch (err) {
       alert('PDF import failed: ' + err.message);
     } finally {
       importing = false;
+    }
+  }
+
+  // Import a whole directory: recreate its sub-structure as folders (inside the
+  // current folder) and import every PDF as a notebook in its matching folder.
+  async function onFolderFiles(e) {
+    const files = Array.from(e.target.files ?? []).filter((f) => /\.pdf$/i.test(f.name));
+    e.target.value = '';
+    if (!files.length) return;
+    importing = true;
+    importProgress = { done: 0, total: files.length };
+    try {
+      const dirIds = new Map();
+      const dirs = new Set();
+      for (const f of files) {
+        const parts = (f.webkitRelativePath || f.name).split('/');
+        parts.pop();
+        if (parts.length) dirs.add(parts.join('/'));
+      }
+      // Create folders parents-first so every parent id exists before its children.
+      const sorted = [...dirs].sort(
+        (a, b) => a.split('/').length - b.split('/').length || a.localeCompare(b)
+      );
+      for (const dir of sorted) {
+        const parts = dir.split('/');
+        const name = parts.pop();
+        const parentId = parts.length ? dirIds.get(parts.join('/')) : currentFolderId;
+        const folder = await api.createFolder(name, parentId);
+        dirIds.set(dir, folder.id);
+      }
+      for (const file of files) {
+        const parts = (file.webkitRelativePath || file.name).split('/');
+        parts.pop();
+        const folderId = parts.length ? dirIds.get(parts.join('/')) : currentFolderId;
+        await importPdfFile(file, folderId);
+        importProgress = { done: importProgress.done + 1, total: files.length };
+      }
+      await refresh();
+      const rootId = dirs.size ? dirIds.get(files[0].webkitRelativePath.split('/')[0]) : null;
+      if (rootId != null) await navigateFolder(rootId);
+    } catch (err) {
+      alert('Folder import failed: ' + err.message);
+    } finally {
+      importing = false;
+      importProgress = null;
     }
   }
 
@@ -297,6 +354,7 @@
         onNewNotebook={newNotebook}
         onNewFolder={newFolder}
         onImportPdf={importPdf}
+        onImportFolder={importFolder}
         onOpenSettings={() => (settingsOpen = true)}
         onOpenNotebookModal={(nb) => (modalNotebook = nb)}
         onOpenFolderModal={(f) => (modalFolder = f)}
@@ -305,6 +363,13 @@
   </div>
 
   <input type="file" accept="application/pdf" class="hidden" bind:this={fileInput} onchange={onPdfFile} />
+  <input type="file" webkitdirectory directory multiple class="hidden" bind:this={folderInput} onchange={onFolderFiles} />
+
+  {#if importProgress}
+    <div class="fixed bottom-4 left-1/2 z-40 -translate-x-1/2 rounded-full bg-stone-800 px-4 py-2 text-sm text-white shadow-lg">
+      Importing {importProgress.done}/{importProgress.total}…
+    </div>
+  {/if}
 
   {#if modalNotebook}
     <NotebookModal
