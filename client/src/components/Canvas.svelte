@@ -73,6 +73,13 @@
   let momentumRaf = null;
   let rafPending = false;
   let contentDirty = false;
+  // Incremental pen drawing: once a pen stroke starts we blit the page content
+  // to the display ONCE (liveBaseDrawn) and then append only the new segments
+  // each frame (liveDrawnIdx = how many points are already on the display).
+  // This avoids re-blitting the whole page + redrawing the entire stroke every
+  // frame, which is what made the pen feel laggy.
+  let liveBaseDrawn = false;
+  let liveDrawnIdx = 0;
   const undoStack = [];
   const redoStack = [];
   let currentPageId = null;
@@ -106,6 +113,8 @@
       }))
     );
     live = null;
+    liveBaseDrawn = false;
+    liveDrawnIdx = 0;
     editing = null;
     selected = null;
     selStroke = null;
@@ -308,29 +317,58 @@
 
   function draw() {
     if (!canvasEl || !page || !ready || !rendered) return;
-    if (contentDirty) {
-      contentDirty = false;
-      renderContent();
-    }
     const ctx = canvasEl.getContext('2d');
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
-    ctx.setTransform(RES, 0, 0, RES, 0, 0);
-    if (contentCanvas) ctx.drawImage(contentCanvas, 0, 0, page.width, page.height);
-    if (live) drawStroke(ctx, live, true);
-    if (selStroke) {
-      const s = strokes.find((o) => o.id === selStroke);
-      if (s) drawSelection(ctx, s);
+
+    // A full redraw (clear + blit the whole page + draw the live stroke in
+    // full) is needed when the content changed, when nothing is being drawn
+    // (selection / eraser preview), or the first frame of a pen stroke. While
+    // a pen stroke is in progress we skip all of that and only append the new
+    // segments — see the incremental path below.
+    // Only a plain (uncorrected) pen stroke can be drawn incrementally. A
+    // shape-corrected live stroke (line/circle/square/triangle) or a
+    // highlighter swipe must be redrawn in full.
+    const penLive = live && live.tool === 'pen' && !live.shape;
+    const needsFull = contentDirty || !penLive || !liveBaseDrawn;
+
+    if (needsFull) {
+      if (contentDirty) {
+        contentDirty = false;
+        renderContent();
+      }
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+      ctx.setTransform(RES, 0, 0, RES, 0, 0);
+      if (contentCanvas) ctx.drawImage(contentCanvas, 0, 0, page.width, page.height);
+      if (live) {
+        drawStroke(ctx, live);
+        if (penLive) {
+          liveBaseDrawn = true;
+          liveDrawnIdx = live.points.length;
+        }
+      }
+      if (selStroke) {
+        const s = strokes.find((o) => o.id === selStroke);
+        if (s) drawSelection(ctx, s);
+      }
+      if (tool === 'eraser' && eraserPos) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(31,41,55,0.65)';
+        ctx.lineWidth = 1.5 / zoom;
+        const r = eraserRadius();
+        ctx.beginPath();
+        ctx.arc(eraserPos.x, eraserPos.y, r, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+      return;
     }
-    if (tool === 'eraser' && eraserPos) {
-      ctx.save();
-      ctx.strokeStyle = 'rgba(31,41,55,0.65)';
-      ctx.lineWidth = 1.5 / zoom;
-      const r = eraserRadius();
-      ctx.beginPath();
-      ctx.arc(eraserPos.x, eraserPos.y, r, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.restore();
+
+    // Incremental pen drawing: the page content is already blitted and the
+    // earlier segments are on the display, so draw only the new tail (a couple
+    // of line segments). This is the per-frame cost while writing — tiny.
+    if (live && liveDrawnIdx < live.points.length) {
+      drawStroke(ctx, live, liveDrawnIdx);
+      liveDrawnIdx = live.points.length;
     }
   }
 
@@ -373,6 +411,9 @@
     if (!canvasEl || !page || !rendered) return;
     canvasEl.width = Math.max(1, Math.round(page.width * RES));
     canvasEl.height = Math.max(1, Math.round(page.height * RES));
+    // Re-allocating the canvas clears it, so the incremental pen base is gone.
+    liveBaseDrawn = false;
+    liveDrawnIdx = 0;
     requestDraw();
   }
 
@@ -409,6 +450,10 @@
     if (res) {
       live.shape = res.shape;
       live.points = res.points;
+      // The corrected shape replaces the raw points wholesale, so the
+      // incremental pen base is invalid — force a full redraw next frame.
+      liveBaseDrawn = false;
+      liveDrawnIdx = 0;
       requestDraw();
     }
   }
@@ -485,6 +530,8 @@
       points: rawPoints,
       shape: null,
     };
+    liveBaseDrawn = false;
+    liveDrawnIdx = 0;
     requestDraw();
   }
 
@@ -853,6 +900,10 @@
         if (live.shape) {
           live.shape = null;
           live.points = live.rawPoints;
+          // Back to raw points: the display currently shows the corrected
+          // shape, so drop the incremental base and redraw the whole stroke.
+          liveBaseDrawn = false;
+          liveDrawnIdx = 0;
         }
         if (live.tool === 'pen') armHoldTimer();
         requestDraw();

@@ -109,6 +109,18 @@ textarea,
   box-shadow: 0 5px 24px rgba(0, 0, 0, 0.28);
 }
 
+/* Floating drawing-tools pill: a translucent surface that blurs whatever page
+   is behind it. Uses the theme tokens so it follows light/dark; the opaque
+   fallback (before the color-mix line) covers browsers without color-mix. */
+.tools-pill {
+  background-color: var(--surface);
+  background-color: color-mix(in srgb, var(--surface) 88%, transparent);
+  border-color: var(--line);
+  border-color: color-mix(in srgb, var(--line) 80%, transparent);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+
 .ink-canvas {
   touch-action: none;
   display: block;

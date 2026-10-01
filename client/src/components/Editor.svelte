@@ -523,7 +523,7 @@
          pointer-events-none so the empty space around the pill still draws;
          only the pill itself captures input. -->
     <div class="pointer-events-none sticky top-2 z-20 flex justify-center px-2">
-      <div class="pointer-events-auto flex max-w-full flex-wrap items-center justify-center gap-1 rounded-2xl border border-stone-200/80 bg-white/90 px-2.5 py-1.5 shadow-lg backdrop-blur-md">
+      <div class="tools-pill pointer-events-auto flex max-w-full flex-wrap items-center justify-center gap-1 rounded-2xl border px-2.5 py-1.5 shadow-lg">
         {#each TOOLS as t (t.id)}
           <button
             class="rounded-lg p-2 {tool === t.id ? 'bg-[#eef2ff] text-[#4f7cff]' : 'text-stone-600 hover:bg-stone-100'}"

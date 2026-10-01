@@ -40,7 +40,13 @@ export function textAt(t, x, y) {
   return x >= b.x - pad && x <= b.x + b.w + pad && y >= b.y - pad && y <= b.y + b.h + pad;
 }
 
-export function drawStroke(ctx, s, fast = false) {
+// Draw a stroke (or, for pen, only the tail from `startIdx` onward) in page
+// coordinates. `startIdx` lets the live pen preview append just the new
+// segments each frame instead of redrawing the whole stroke — that is what
+// keeps the pen feeling instant. The pen uses per-segment pressure width for
+// both the live preview and committed strokes, so a stroke looks identical
+// while drawing and after it is committed (no "snap" on pen-up).
+export function drawStroke(ctx, s, startIdx = 0) {
   if (s.shape) {
     drawShape(ctx, s.shape, s);
     return;
@@ -51,6 +57,8 @@ export function drawStroke(ctx, s, fast = false) {
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   if (s.tool === 'highlighter') {
+    // Highlighter is always drawn whole: swipes are short and the multiply
+    // blend can't be appended incrementally without darkening the overlap.
     ctx.globalAlpha = 0.4;
     ctx.globalCompositeOperation = 'multiply';
     ctx.strokeStyle = s.color;
@@ -69,29 +77,6 @@ export function drawStroke(ctx, s, fast = false) {
       ctx.lineTo(pts[pts.length - 1][0], pts[pts.length - 1][1]);
     }
     ctx.stroke();
-  } else if (fast) {
-    // Live preview: single smooth path, average width (committed strokes use the
-    // per-segment pressure path below, rendered once into the content canvas).
-    ctx.strokeStyle = s.color;
-    let wSum = 0;
-    for (const p of pts) wSum += 0.4 + 0.6 * p[2];
-    ctx.lineWidth = Math.max(0.5, s.size * (wSum / pts.length));
-    ctx.beginPath();
-    if (pts.length === 1) {
-      ctx.fillStyle = s.color;
-      const r = (s.size * (0.4 + 0.6 * pts[0][2])) / 2;
-      ctx.arc(pts[0][0], pts[0][1], Math.max(r, 0.5), 0, Math.PI * 2);
-      ctx.fill();
-    } else {
-      ctx.moveTo(pts[0][0], pts[0][1]);
-      for (let i = 1; i < pts.length - 1; i++) {
-        const mx = (pts[i][0] + pts[i + 1][0]) / 2;
-        const my = (pts[i][1] + pts[i + 1][1]) / 2;
-        ctx.quadraticCurveTo(pts[i][0], pts[i][1], mx, my);
-      }
-      ctx.lineTo(pts[pts.length - 1][0], pts[pts.length - 1][1]);
-      ctx.stroke();
-    }
   } else {
     ctx.strokeStyle = s.color;
     if (pts.length === 1) {
@@ -101,7 +86,7 @@ export function drawStroke(ctx, s, fast = false) {
       ctx.arc(pts[0][0], pts[0][1], Math.max(r, 0.5), 0, Math.PI * 2);
       ctx.fill();
     } else {
-      for (let i = 1; i < pts.length; i++) {
+      for (let i = Math.max(1, startIdx); i < pts.length; i++) {
         const p0 = pts[i - 1];
         const p1 = pts[i];
         ctx.lineWidth = Math.max(0.5, s.size * (0.4 + 0.6 * (p0[2] + p1[2]) / 2));
