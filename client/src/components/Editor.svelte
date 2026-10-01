@@ -594,9 +594,14 @@
     class="min-h-0 flex-1 order-4 {pinch ? 'overflow-hidden' : 'overflow-y-auto'}"
     bind:this={containerRef}
   >
-    <div class="mx-auto flex max-w-5xl flex-col items-center gap-8 px-4 pb-[calc(2rem_+_env(safe-area-inset-bottom))] pt-8">
+    <div class="mx-auto flex max-w-5xl flex-col gap-8 px-4 pb-[calc(2rem_+_env(safe-area-inset-bottom))] pt-8">
       {#each pages as p (p.id)}
-        <div class="relative" data-page-id={p.id}>
+        <!-- mx-auto (not items-center): a centered flex item wider than the
+             column overflows to BOTH sides and the left half becomes
+             unreachable (negative overflow can't be scrolled to). Auto
+             margins center when the page fits and collapse to 0 when it
+             doesn't, so the overflow goes right — where scrolling reaches. -->
+        <div class="relative mx-auto" data-page-id={p.id}>
           <span class="pointer-events-none absolute -top-6 left-0 text-xs font-medium text-stone-400">Page {p.idx + 1}</span>
           <Canvas
             page={p}

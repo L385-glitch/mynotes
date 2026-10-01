@@ -130,7 +130,7 @@
   async function handleContentChange(pageId, content) {
     saveState = 'saving';
     try {
-      await api.savePage(pageId, { content });
+      await api.savePageContent(pageId, content);
       saveState = 'saved';
     } catch {
       saveState = 'unsaved';

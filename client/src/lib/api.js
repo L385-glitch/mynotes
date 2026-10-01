@@ -16,6 +16,28 @@ async function req(method, url, body) {
   return res.json();
 }
 
+// Serialize a page's content in small chunks, yielding to the browser
+// between chunks, so a large page never blocks the main thread (and an
+// active pen stroke) for more than a few ms at a time.
+async function stringifyContent(content) {
+  const strokes = content.strokes ?? [];
+  const texts = content.texts ?? [];
+  const parts = ['{"strokes":['];
+  for (let i = 0; i < strokes.length; i++) {
+    if (i) parts.push(',');
+    parts.push(JSON.stringify(strokes[i]));
+    if ((i & 127) === 127) await new Promise((r) => setTimeout(r));
+  }
+  parts.push('],"texts":[');
+  for (let i = 0; i < texts.length; i++) {
+    if (i) parts.push(',');
+    parts.push(JSON.stringify(texts[i]));
+    if ((i & 127) === 127) await new Promise((r) => setTimeout(r));
+  }
+  parts.push(']}');
+  return parts.join('');
+}
+
 export const api = {
   // folders
   listFolders: () => req('GET', '/api/folders'),
@@ -36,6 +58,25 @@ export const api = {
   createPage: (notebookId, opts) => req('POST', `/api/notebooks/${notebookId}/pages`, opts),
   getPage: (id) => req('GET', `/api/pages/${id}`),
   savePage: (id, patch) => req('PUT', `/api/pages/${id}`, patch),
+  // Autosave path: serializes in chunks (see stringifyContent) and skips
+  // parsing the response, which is never used — a multi-MB JSON.parse on the
+  // main thread would jank the pen just like the stringify would.
+  async savePageContent(id, content) {
+    const body = await stringifyContent(content);
+    const res = await fetch(`/api/pages/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      try {
+        const j = await res.json();
+        if (j.error) msg = j.error;
+      } catch {}
+      throw new Error(msg);
+    }
+  },
   movePage: (id, dir) => req('POST', `/api/pages/${id}/move`, { dir }),
   deletePage: (id) => req('DELETE', `/api/pages/${id}`),
 

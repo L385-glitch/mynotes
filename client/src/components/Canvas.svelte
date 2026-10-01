@@ -58,6 +58,8 @@
   const redoStack = [];
   let currentPageId = null;
   let saveTimer = null;
+  let saveChain = Promise.resolve();
+  let savePending = 0;
   let dirty = false;
   let holdTimer = null;
   let untrackMomentum = null;
@@ -1054,10 +1056,25 @@
     }
   }
 
+  // Queue a save onto the chain so saves never overlap and the newest content
+  // always lands last. Routine ticks are dropped when the chain is backed up
+  // (the next tick or flush carries the latest content); flushes are never
+  // dropped.
+  function queueSave(pid, content, required = false) {
+    if (!required && savePending >= 3) return false;
+    savePending++;
+    saveChain = saveChain
+      .then(() => onContentChange?.(pid, content))
+      .finally(() => savePending--);
+    return true;
+  }
+
   // Interval autosave: while the page has unsaved changes, persist it every
   // 2s so other devices stay up to date even mid-drawing. The interval reads
   // the current content at fire time and only saves the page this component
   // currently holds (a page switch flushes and cancels the interval first).
+  // A tick is skipped while the pen is down so serialization never runs
+  // mid-stroke.
   function scheduleSave(pid) {
     if (pid == null) return;
     dirty = true;
@@ -1069,8 +1086,9 @@
         return;
       }
       if (currentPageId == null) return;
+      if (live) return;
+      if (!queueSave(currentPageId, { strokes, texts })) return;
       dirty = false;
-      onContentChange?.(currentPageId, { strokes, texts });
     }, SAVE_INTERVAL);
   }
 
@@ -1080,7 +1098,8 @@
     cancelSave();
     if (pid == null || !dirty) return Promise.resolve();
     dirty = false;
-    return Promise.resolve(onContentChange?.(pid, { strokes, texts }));
+    queueSave(pid, { strokes, texts }, true);
+    return saveChain;
   }
 
   function onDeleteKey(e) {
