@@ -140,6 +140,13 @@
 
   function onPinchStart(mid) {
     const el = containerRef;
+    // Lock the container synchronously BEFORE reading scrollTop: the class
+    // toggle below only lands after this handler returns, and a fast flick may
+    // still be flinging natively at this moment. A stale (moving) scrollTop
+    // would drift the zoom anchor for the whole pinch. overflow:hidden also
+    // cancels the native fling; programmatic scrollTop still works while it is
+    // set, which onPinchMove relies on.
+    if (el) el.style.overflowY = 'hidden';
     const top = el ? el.getBoundingClientRect().top : 0;
     pinch = {
       z0: zoom,
@@ -169,6 +176,8 @@
 
   function onPinchEnd() {
     pinch = null;
+    // Release the synchronous lock from onPinchStart (the class takes over).
+    if (containerRef) containerRef.style.overflowY = '';
   }
 
   function registerApi(pageId, api_) {

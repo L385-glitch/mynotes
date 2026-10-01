@@ -2,6 +2,7 @@
   import { onMount, tick } from 'svelte';
   import { drawStroke, drawTextItem, backgroundCanvas, strokeNear, strokeHitSelect, textBounds, textAt, eraseBrush, uid, correctStroke, moveStroke, resizeStroke, getHandles, strokeBounds } from '../lib/engine/ink.js';
   import { renderPdfPage, getPdfTextLayout } from '../lib/pdf.js';
+  import { trackMomentum, stopAllMomentum, penDownChange, pensDown } from '../lib/momentum.js';
 
   // Renders a single page at a shared zoom level. Panning/zooming are handled by
   // the parent (the editor scrolls a vertical stack of these sheets); this
@@ -59,6 +60,7 @@
   let saveTimer = null;
   let dirty = false;
   let holdTimer = null;
+  let untrackMomentum = null;
 
   // Load a page's content and (re)build its canvases. Called when the page
   // changes and when the page scrolls back into the render window.
@@ -417,6 +419,7 @@
     const rawPoints = [[p.x, p.y, e.pressure || 0.5]];
     live = {
       id: uid(),
+      pointerId: e.pointerId,
       tool,
       color,
       size: tool === 'highlighter' ? size * 5 : size,
@@ -497,7 +500,7 @@
     if (tool === 'text') {
       textDown(p, e);
     } else if (tool === 'eraser') {
-      gesture = { type: 'erase' };
+      gesture = { type: 'erase', pointerId: e.pointerId };
       eraserPos = p;
       eraseAt(p.x, p.y);
       requestDraw();
@@ -557,19 +560,51 @@
   function onPointerDown(e) {
     const isMouse = e.pointerType === 'mouse';
     const isTouch = e.pointerType === 'touch';
+    const isPen = e.pointerType === 'pen';
     if (isMouse && e.button !== 0) return;
-    stopMomentum();
+    // Any finger/pen down brakes the scroll — including momentum started by a
+    // fast flick on ANOTHER page's canvas (they all share one scroll container).
+    stopAllMomentum();
+
+    // Palm rejection: while the pen is down (or a stroke is in progress), a
+    // touch is the writing hand resting on the screen. Ignore it entirely so it
+    // can't kill the stroke, start a pinch, or scroll the page.
+    if (isTouch && (live || pensDown() > 0)) return;
+
+    // Pen down: the resting hand's touch (if any) is no longer a gesture — drop
+    // it and the gesture it started, then run the tool.
+    if (isPen) {
+      penDownChange(1);
+      for (const [id, p] of [...pointers]) if (p.type === 'touch') pointers.delete(id);
+      if (
+        gesture &&
+        (gesture.type === 'maybe-scroll' ||
+          gesture.type === 'maybe-select-or-scroll' ||
+          gesture.type === 'maybe-add-text-or-scroll' ||
+          gesture.type === 'pan')
+      ) {
+        gesture = null;
+        canvasEl.classList.remove('panning');
+      }
+      // Pen down during a pinch: the fingers are the resting hand, not a zoom.
+      if (gesture?.type === 'pinch') {
+        gesture = null;
+        eraserPos = null;
+        onPinchEnd?.();
+      }
+    }
 
     if (!rendered) onNeedRender?.(page?.id);
     if (editing) commitEdit();
     canvasEl.setPointerCapture(e.pointerId);
-    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
     onActive?.(page?.id);
 
     // Two-finger touch: pinch-zoom + two-finger pan. The editor locks the
     // scroll container for the whole gesture so the view can't jump to another
-    // page mid-zoom.
-    if (pointers.size === 2) {
+    // page mid-zoom. Only two TOUCH pointers pinch: a pen + the writing hand
+    // must never zoom (the touch would have been rejected above anyway).
+    if (pointers.size === 2 && [...pointers.values()].every((p) => p.type === 'touch')) {
       if (live) {
         live = null;
         requestDraw();
@@ -596,7 +631,8 @@
 
   function onPointerMove(e) {
     if (!pointers.has(e.pointerId)) return;
-    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const prev = pointers.get(e.pointerId);
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: prev?.type ?? e.pointerType });
     // Tap-or-drag gestures: once the finger/cursor moves past the tap
     // threshold, commit to the drag action (scroll for touch, draw for mouse)
     // instead of the tap action (select / add text).
@@ -611,6 +647,12 @@
       const dx = e.clientX - gesture.startX;
       const dy = e.clientY - gesture.startY;
       if (Math.hypot(dx, dy) < TAP_THRESHOLD) return;
+      if (pensDown() > 0 && pointers.get(e.pointerId)?.type === 'touch') {
+        // The finger is the writing hand drifting while the pen draws: it must
+        // not turn into a page scroll.
+        gesture = null;
+        return;
+      }
       if (gesture.type === 'maybe-select-or-draw' || gesture.type === 'maybe-deselect-or-draw') {
         // Mouse: the drag draws a new stroke starting where the user pressed.
         const startPage = gesture.page;
@@ -624,6 +666,12 @@
       return;
     }
     if (gesture?.type === 'pan') {
+      if (pensDown() > 0) {
+        // The pen came down mid-pan: the finger is now the resting hand.
+        gesture = null;
+        canvasEl.classList.remove('panning');
+        return;
+      }
       const sc = scrollAncestor();
       if (sc) {
         sc.scrollLeft -= e.clientX - gesture.lastX;
@@ -676,7 +724,7 @@
       }
       return;
     }
-    if (gesture?.type === 'erase') {
+    if (gesture?.type === 'erase' && gesture.pointerId === e.pointerId) {
       const p = toPage(e);
       eraserPos = p;
       eraseAt(p.x, p.y);
@@ -724,7 +772,7 @@
       }
       return;
     }
-    if (live) {
+    if (live && live.pointerId === e.pointerId) {
       const events = e.getCoalescedEvents?.() || [e];
       let added = false;
       for (const ev of events) {
@@ -772,7 +820,12 @@
   }
 
   function onPointerEnd(e) {
+    const wasTracked = pointers.has(e.pointerId);
     pointers.delete(e.pointerId);
+    if (e.pointerType === 'pen' && wasTracked) penDownChange(-1);
+    // A touch that was rejected as the writing hand owns no gesture: its lift
+    // must not commit the pen's live stroke or end an eraser swipe.
+    if (!wasTracked) return;
     if (gesture?.type === 'pan') {
       const vy = gesture.vy || 0;
       gesture = null;
@@ -1042,11 +1095,13 @@
 
   onMount(() => {
     ready = true;
+    untrackMomentum = trackMomentum(stopMomentum);
     resize();
     canvasEl?.addEventListener('wheel', onWheel, { passive: false });
     window.addEventListener('resize', resize);
     window.addEventListener('keydown', onDeleteKey);
     return () => {
+      untrackMomentum?.();
       canvasEl?.removeEventListener('wheel', onWheel);
       window.removeEventListener('resize', resize);
       window.removeEventListener('keydown', onDeleteKey);
