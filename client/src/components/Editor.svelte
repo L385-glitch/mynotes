@@ -522,7 +522,9 @@
          so the tools stay reachable without scrolling. The wrapper is
          pointer-events-none so the empty space around the pill still draws;
          only the pill itself captures input. -->
-    <div class="pointer-events-none sticky top-2 z-20 flex justify-center px-2">
+    <!-- left-0 right-0 pins the sticky wrapper to the visible area so the pill
+         stays centered while the (wider) page scrolls horizontally. -->
+    <div class="pointer-events-none sticky top-2 left-0 right-0 z-20 flex justify-center px-2">
       <div class="tools-pill pointer-events-auto flex max-w-full flex-wrap items-center justify-center gap-1 rounded-2xl border px-2.5 py-1.5 shadow-lg">
         {#each TOOLS as t (t.id)}
           <button

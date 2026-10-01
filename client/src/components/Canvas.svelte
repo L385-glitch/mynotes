@@ -64,7 +64,7 @@
   let ready = false;
 
   const RES = 2;
-  const SAVE_INTERVAL = 30000;
+  const SAVE_INTERVAL = 3000;
   // Screen-space distance (px) below which a touch/click is a "tap" (select /
   // add text) rather than a drag (scroll / draw / move).
   const TAP_THRESHOLD = 6;
@@ -82,6 +82,49 @@
   let dirty = false;
   let holdTimer = null;
   let untrackMomentum = null;
+
+  // --- Temporary pen-latency diagnostics ------------------------------------
+  // While a stroke is in progress the on-screen HUD (bottom-left) shows:
+  //   fps  – render frames/sec (how often draw() actually runs)
+  //   in/s – pen input samples/sec (coalesced points Safari delivered)
+  //   ev/s – pointermove events/sec
+  //   lag  – ms between the last input sample and the last render (ink lag)
+  // How to read it: if fps is well below the display rate (60 or 120) we are
+  // dropping frames -> the per-frame render cost is the bottleneck. If in/s is
+  // capped at ~60 on a 120Hz iPad, Safari is throttling the pen input.
+  let diag = $state({ fps: 0, in: 0, ev: 0, lag: 0 });
+  let _d = { s: 0, e: 0, f: 0, t0: 0, lastSample: 0, lastRender: 0 };
+  function diagReset() {
+    _d = { s: 0, e: 0, f: 0, t0: 0, lastSample: 0, lastRender: 0 };
+    diag = { fps: 0, in: 0, ev: 0, lag: 0 };
+  }
+  function diagInput(n) {
+    _d.e++;
+    _d.s += n;
+    _d.lastSample = performance.now();
+  }
+  function diagFrame() {
+    _d.f++;
+    const now = performance.now();
+    _d.lastRender = now;
+    if (!_d.t0) {
+      _d.t0 = now;
+      return;
+    }
+    if (now - _d.t0 >= 400) {
+      const sec = (now - _d.t0) / 1000;
+      diag = {
+        fps: Math.round(_d.f / sec),
+        in: Math.round(_d.s / sec),
+        ev: Math.round(_d.e / sec),
+        lag: Math.max(0, Math.round(_d.lastRender - _d.lastSample)),
+      };
+      _d.s = 0;
+      _d.e = 0;
+      _d.f = 0;
+      _d.t0 = now;
+    }
+  }
 
   // Load a page's content and (re)build its canvases. Called when the page
   // changes and when the page scrolls back into the render window.
@@ -308,6 +351,7 @@
 
   function draw() {
     if (!canvasEl || !page || !ready || !rendered) return;
+    if (live) diagFrame();
     if (contentDirty) {
       contentDirty = false;
       renderContent();
@@ -474,6 +518,7 @@
   // Begin a freehand stroke with the active ink tool.
   function startDraw(p, e) {
     clearHoldTimer();
+    diagReset();
     const rawPoints = [[p.x, p.y, e.pressure || 0.5]];
     live = {
       id: uid(),
@@ -839,6 +884,7 @@
       // points. Guard against the empty array explicitly.
       const coalesced = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
       const events = coalesced.length > 0 ? coalesced : [e];
+      diagInput(events.length);
       let added = false;
       for (const ev of events) {
         const p = toPage(ev);
@@ -1133,7 +1179,7 @@
   }
 
   // Interval autosave: while the page has unsaved changes, persist it every
-  // 30s so other devices stay up to date even mid-drawing. The interval reads
+  // 3s so other devices stay up to date even mid-drawing. The interval reads
   // the current content at fire time and only saves the page this component
   // currently holds (a page switch flushes and cancels the interval first).
   // A tick is skipped while the pen is down so serialization never runs
@@ -1294,5 +1340,13 @@
         e.stopPropagation();
       }}
     ></textarea>
+  {/if}
+  {#if live}
+    <div class="pen-diag">
+      <div><b>{diag.fps}</b> fps</div>
+      <div><b>{diag.in}</b> in/s</div>
+      <div><b>{diag.ev}</b> ev/s</div>
+      <div><b>{diag.lag}</b> ms lag</div>
+    </div>
   {/if}
 </div>

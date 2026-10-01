@@ -286,7 +286,7 @@
   onMount(() => {
     refresh();
     // Flush pending saves when the tab/app is hidden (e.g. switching apps on
-    // iPad), so other devices get the latest content even if the 30s autosave
+    // iPad), so other devices get the latest content even if the 3s autosave
     // hasn't fired yet.
     function onHide() {
       if (document.visibilityState === 'hidden') editorApi?.flush?.();
