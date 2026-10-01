@@ -22,6 +22,7 @@
   let tool = $state('pen');
   let color = $state('#1f2937');
   let size = $state(3);
+  let eraserSize = $state(10);
   let exporting = $state(false);
   let bgOpen = $state(false);
   let colorOpen = $state(false);
@@ -356,83 +357,6 @@
 
 <div class="flex h-full min-h-0 flex-1 flex-col">
   <div class="toolbar flex shrink-0 flex-wrap items-center gap-x-1 gap-y-1.5 border-b border-stone-200 bg-white px-2 py-1.5 sm:px-3 order-2">
-    {#each TOOLS as t (t.id)}
-      <button
-        class="rounded-lg p-2 {tool === t.id ? 'bg-[#eef2ff] text-[#4f7cff]' : 'text-stone-600 hover:bg-stone-100'}"
-        title={t.label}
-        onclick={() => setTool(t.id)}
-      >
-        <Icon d={t.icon} />
-      </button>
-    {/each}
-
-    {#if tool === 'eraser'}
-      <div class="flex items-center rounded-lg bg-stone-100 p-0.5">
-        <button class="rounded px-2 py-1 text-xs font-medium {eraserMode === 'brush' ? 'bg-white text-[#4f7cff] shadow-sm' : 'text-stone-500'}" onclick={() => (eraserMode = 'brush')}>Brush</button>
-        <button class="rounded px-2 py-1 text-xs font-medium {eraserMode === 'line' ? 'bg-white text-[#4f7cff] shadow-sm' : 'text-stone-500'}" onclick={() => (eraserMode = 'line')}>Line</button>
-      </div>
-    {/if}
-
-    {#if tool === 'pen' || tool === 'highlighter'}
-      <div class="mx-1 h-6 w-px bg-stone-200"></div>
-
-      <div class="relative">
-        <button
-          class="flex items-center gap-1 rounded-lg p-1.5 text-stone-600 hover:bg-stone-100"
-          title="Color"
-          onclick={() => (colorOpen = !colorOpen)}
-        >
-          <span class="h-5 w-5 rounded-full border border-stone-300" style="background:{color}"></span>
-          <Icon d={I.chevronDown} size={12} />
-        </button>
-        {#if colorOpen}
-          <div class="absolute left-0 top-full z-30 mt-1 w-48 rounded-lg border border-stone-200 bg-white p-2 shadow-lg">
-            <div class="grid grid-cols-6 gap-1.5">
-              {#each palette as c (c)}
-                <button
-                  class="h-6 w-6 rounded-full border {c === color ? 'border-[#4f7cff] ring-2 ring-[#4f7cff]/40' : 'border-stone-200'}"
-                  style="background:{c}"
-                  title={c}
-                  onclick={() => {
-                    color = c;
-                    colorOpen = false;
-                  }}
-                ></button>
-              {/each}
-            </div>
-            <div class="mt-2 flex items-center gap-2 border-t border-stone-200 pt-2">
-              <input
-                type="color"
-                value={color}
-                oninput={(e) => (color = e.target.value)}
-                class="h-7 w-9 cursor-pointer rounded border border-stone-200 bg-transparent p-0.5"
-              />
-              <span class="text-xs text-stone-500">Custom color</span>
-            </div>
-          </div>
-        {/if}
-      </div>
-
-      <div class="mx-1 h-6 w-px bg-stone-200"></div>
-
-      <div class="flex items-center gap-2">
-        <span class="rounded-full bg-stone-700" style="width:{Math.min(20, size * 1.6)}px;height:{Math.min(20, size * 1.6)}px"></span>
-        <input
-          type="range"
-          min="1"
-          max="20"
-          step="0.5"
-          value={size}
-          oninput={(e) => (size = Number(e.target.value))}
-          class="h-1 w-24 accent-[#4f7cff]"
-          title="Brush size"
-        />
-        <span class="w-7 text-right text-xs text-stone-500">{size}</span>
-      </div>
-    {/if}
-
-    <div class="mx-1 h-6 w-px bg-stone-200"></div>
-
     <button class="rounded-lg p-2 text-stone-600 hover:bg-stone-100" title="Undo (Ctrl+Z)" onclick={() => activeApi()?.undo()}>
       <Icon d={I.undo} />
     </button>
@@ -594,6 +518,108 @@
     class="min-h-0 flex-1 order-4 {pinch ? 'overflow-hidden' : 'overflow-y-auto'}"
     bind:this={containerRef}
   >
+    <!-- Floating drawing-tools pill: sticks to the top-middle of the canvas area
+         so the tools stay reachable without scrolling. The wrapper is
+         pointer-events-none so the empty space around the pill still draws;
+         only the pill itself captures input. -->
+    <div class="pointer-events-none sticky top-2 z-20 flex justify-center px-2">
+      <div class="pointer-events-auto flex max-w-full flex-wrap items-center justify-center gap-1 rounded-2xl border border-stone-200/80 bg-white/90 px-2.5 py-1.5 shadow-lg backdrop-blur-md">
+        {#each TOOLS as t (t.id)}
+          <button
+            class="rounded-lg p-2 {tool === t.id ? 'bg-[#eef2ff] text-[#4f7cff]' : 'text-stone-600 hover:bg-stone-100'}"
+            title={t.label}
+            onclick={() => setTool(t.id)}
+          >
+            <Icon d={t.icon} />
+          </button>
+        {/each}
+
+        {#if tool === 'eraser'}
+          <div class="flex items-center rounded-lg bg-stone-100 p-0.5">
+            <button class="rounded px-2 py-1 text-xs font-medium {eraserMode === 'brush' ? 'bg-white text-[#4f7cff] shadow-sm' : 'text-stone-500'}" onclick={() => (eraserMode = 'brush')}>Brush</button>
+            <button class="rounded px-2 py-1 text-xs font-medium {eraserMode === 'line' ? 'bg-white text-[#4f7cff] shadow-sm' : 'text-stone-500'}" onclick={() => (eraserMode = 'line')}>Line</button>
+          </div>
+
+          <div class="mx-1 h-6 w-px bg-stone-200"></div>
+
+          <div class="flex items-center gap-2">
+            <span
+              class="rounded-full border border-stone-400 bg-white"
+              style="width:{Math.min(24, eraserSize * 1.1)}px;height:{Math.min(24, eraserSize * 1.1)}px"
+            ></span>
+            <input
+              type="range"
+              min="2"
+              max="40"
+              step="1"
+              value={eraserSize}
+              oninput={(e) => (eraserSize = Number(e.target.value))}
+              class="h-1 w-24 accent-[#4f7cff]"
+              title="Eraser size"
+            />
+            <span class="w-7 text-right text-xs text-stone-500">{eraserSize}</span>
+          </div>
+        {/if}
+
+        {#if tool === 'pen' || tool === 'highlighter'}
+          <div class="mx-1 h-6 w-px bg-stone-200"></div>
+
+          <div class="relative">
+            <button
+              class="flex items-center gap-1 rounded-lg p-1.5 text-stone-600 hover:bg-stone-100"
+              title="Color"
+              onclick={() => (colorOpen = !colorOpen)}
+            >
+              <span class="h-5 w-5 rounded-full border border-stone-300" style="background:{color}"></span>
+              <Icon d={I.chevronDown} size={12} />
+            </button>
+            {#if colorOpen}
+              <div class="absolute left-1/2 top-full z-30 mt-1 w-48 -translate-x-1/2 rounded-lg border border-stone-200 bg-white p-2 shadow-lg">
+                <div class="grid grid-cols-6 gap-1.5">
+                  {#each palette as c (c)}
+                    <button
+                      class="h-6 w-6 rounded-full border {c === color ? 'border-[#4f7cff] ring-2 ring-[#4f7cff]/40' : 'border-stone-200'}"
+                      style="background:{c}"
+                      title={c}
+                      onclick={() => {
+                        color = c;
+                        colorOpen = false;
+                      }}
+                    ></button>
+                  {/each}
+                </div>
+                <div class="mt-2 flex items-center gap-2 border-t border-stone-200 pt-2">
+                  <input
+                    type="color"
+                    value={color}
+                    oninput={(e) => (color = e.target.value)}
+                    class="h-7 w-9 cursor-pointer rounded border border-stone-200 bg-transparent p-0.5"
+                  />
+                  <span class="text-xs text-stone-500">Custom color</span>
+                </div>
+              </div>
+            {/if}
+          </div>
+
+          <div class="mx-1 h-6 w-px bg-stone-200"></div>
+
+          <div class="flex items-center gap-2">
+            <span class="rounded-full bg-stone-700" style="width:{Math.min(20, size * 1.6)}px;height:{Math.min(20, size * 1.6)}px"></span>
+            <input
+              type="range"
+              min="1"
+              max="20"
+              step="0.5"
+              value={size}
+              oninput={(e) => (size = Number(e.target.value))}
+              class="h-1 w-24 accent-[#4f7cff]"
+              title="Brush size"
+            />
+            <span class="w-7 text-right text-xs text-stone-500">{size}</span>
+          </div>
+        {/if}
+      </div>
+    </div>
     <div class="mx-auto flex max-w-5xl flex-col gap-8 px-4 pb-[calc(2rem_+_env(safe-area-inset-bottom))] pt-8">
       {#each pages as p (p.id)}
         <!-- mx-auto (not items-center): a centered flex item wider than the
@@ -608,6 +634,7 @@
             tool={tool}
             color={color}
             size={size}
+            eraserSize={eraserSize}
             eraserMode={eraserMode}
             {dark}
             {zoom}

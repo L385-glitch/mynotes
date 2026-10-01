@@ -12,6 +12,7 @@
     tool = 'pen',
     color = '#1f2937',
     size = 3,
+    eraserSize = 10,
     eraserMode = 'brush',
     dark = false,
     zoom = 1,
@@ -358,9 +359,9 @@
     ctx.restore();
   }
 
-  // Eraser footprint in page units, scaled by the brush size.
+  // Eraser footprint in page units, scaled by the (independent) eraser size.
   function eraserRadius() {
-    return size / zoom + 3;
+    return eraserSize / zoom + 3;
   }
 
   // Size the backing canvas to RES page units (independent of zoom). The
@@ -830,7 +831,14 @@
       return;
     }
     if (live && live.pointerId === e.pointerId) {
-      const events = e.getCoalescedEvents?.() || [e];
+      // Capture every sample the pen delivered this frame. getCoalescedEvents()
+      // returns the full batch (including the current event) in most browsers,
+      // but WebKit can return an EMPTY array for a non-coalesced event. The old
+      // `|| [e]` fallback never fired for that case because [] is truthy, so the
+      // sample was silently dropped — the pen felt laggy and fast strokes lost
+      // points. Guard against the empty array explicitly.
+      const coalesced = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
+      const events = coalesced.length > 0 ? coalesced : [e];
       let added = false;
       for (const ev of events) {
         const p = toPage(ev);
