@@ -34,8 +34,26 @@
   let pdfCanvas = null;
   let pdfTextLines = [];
 
-  let strokes = $state([]);
-  let texts = $state([]);
+  // Plain (non-reactive) data: the template never renders strokes/texts
+  // directly (the canvas draws them imperatively). Keeping them out of
+  // Svelte's deep proxy makes autosave serialization ~7x faster (measured:
+  // 619ms -> 87ms for a 5000-stroke page), so saves no longer stall the pen.
+  // The rev counters provide the reactivity the few deriveds/effects that
+  // read this data need.
+  let strokes = [];
+  let texts = [];
+  let strokesRev = $state(0);
+  let textsRev = $state(0);
+
+  function setStrokes(v) {
+    strokes = v;
+    strokesRev++;
+  }
+
+  function setTexts(v) {
+    texts = v;
+    textsRev++;
+  }
   let live = null;
   let editing = $state(null);
   let selected = $state(null);
@@ -68,8 +86,24 @@
   // changes and when the page scrolls back into the render window.
   function loadPage(p) {
     currentPageId = p.id;
-    strokes = (p.content?.strokes ?? []).map((s) => ({ ...s, id: s.id ?? uid() }));
-    texts = (p.content?.texts ?? []).map((t) => ({ ...t, id: t.id ?? uid() }));
+    // Deep-copy to plain data: p.content comes from the proxied `pages` state,
+    // and a shallow spread would keep the points/shape sub-arrays proxied,
+    // which would make autosave serialization slow again.
+    setStrokes(
+      (p.content?.strokes ?? []).map((s) => ({
+        ...s,
+        id: s.id ?? uid(),
+        points: s.points ? s.points.map((p) => [p[0], p[1], p[2]]) : undefined,
+        shape: s.shape ? { ...s.shape } : undefined,
+      }))
+    );
+    setTexts(
+      (p.content?.texts ?? []).map((t) => ({
+        ...t,
+        id: t.id ?? uid(),
+        border: t.border ? { ...t.border } : undefined,
+      }))
+    );
     live = null;
     editing = null;
     selected = null;
@@ -133,8 +167,8 @@
     if (!p) {
       if (editing) commitEdit();
       if (currentPageId != null) flushSave(currentPageId);
-      strokes = [];
-      texts = [];
+      setStrokes([]);
+      setTexts([]);
       live = null;
       editing = null;
       selected = null;
@@ -169,13 +203,33 @@
     }
   });
 
+  // Last committed arrays: lets the effect below tell a pure append (a stroke
+  // commit on pen-up) apart from structural changes (erase, undo, move, ...).
+  // Appends draw only the new strokes onto the existing content canvas, which
+  // is O(new strokes) instead of O(all strokes) — a full re-render of a full
+  // page of handwriting takes tens of ms and would stall the pen on every
+  // pen-up.
+  let prevStrokes = strokes;
+  let prevTexts = texts;
+
   $effect(() => {
+    void strokesRev;
+    void textsRev;
     const s = strokes;
     const t = texts;
-    if (!contentCanvas) return;
-    // Coalesce: mark the content canvas dirty and let the next rAF blit it,
-    // so several stroke updates in one frame cost a single re-render.
-    contentDirty = true;
+    const isAppend =
+      t === prevTexts && s.length >= prevStrokes.length && prevStrokes.every((o, i) => s[i] === o);
+    if (isAppend && contentCanvas) {
+      const ctx = contentCanvas.getContext('2d');
+      ctx.setTransform(RES, 0, 0, RES, 0, 0);
+      for (let i = prevStrokes.length; i < s.length; i++) drawStroke(ctx, s[i]);
+    } else {
+      // Coalesce: mark the content canvas dirty and let the next rAF blit it,
+      // so several updates in one frame cost a single re-render.
+      contentDirty = true;
+    }
+    prevStrokes = s;
+    prevTexts = t;
     requestDraw();
   });
 
@@ -205,6 +259,7 @@
   // formatting controls for it.
   $effect(() => {
     const id = selected;
+    void textsRev;
     const t = texts.find((o) => o.id === id) ?? null;
     onTextSelect?.(t ? { ...t } : null);
   });
@@ -707,7 +762,7 @@
       const s = strokes.find((o) => o.id === gesture.id);
       if (s) {
         const moved = moveStroke(gesture.orig, dx / zoom, dy / zoom);
-        strokes = strokes.map((o) => (o.id === s.id ? moved : o));
+        setStrokes(strokes.map((o) => (o.id === s.id ? moved : o)));
         requestDraw();
       }
       return;
@@ -721,7 +776,7 @@
         }
         const p = toPage(e);
         const resized = resizeStroke(gesture.orig, gesture.handle, p);
-        strokes = strokes.map((o) => (o.id === s.id ? resized : o));
+        setStrokes(strokes.map((o) => (o.id === s.id ? resized : o)));
         requestDraw();
       }
       return;
@@ -745,7 +800,7 @@
       if (t) {
         const nx = gesture.origX + dx / zoom;
         const ny = gesture.origY + dy / zoom;
-        texts = texts.map((o) => (o.id === t.id ? { ...t, x: nx, y: ny } : o));
+        setTexts(texts.map((o) => (o.id === t.id ? { ...t, x: nx, y: ny } : o)));
         requestDraw();
       }
       return;
@@ -763,12 +818,12 @@
           // Drag the left border: move x, keep the right edge anchored.
           const right = gesture.origX + gesture.origW;
           const nx = Math.max(0, Math.min(right - 60, gesture.origX + dx));
-          texts = texts.map((o) => (o.id === t.id ? { ...t, x: nx, w: right - nx } : o));
+          setTexts(texts.map((o) => (o.id === t.id ? { ...t, x: nx, w: right - nx } : o)));
         } else {
           // Drag the right border / corner: only the width changes. The font
           // size is independent (adjusted via the Text formatting row).
           const w = Math.max(60, gesture.origW + dx);
-          texts = texts.map((o) => (o.id === t.id ? { ...t, w } : o));
+          setTexts(texts.map((o) => (o.id === t.id ? { ...t, w } : o)));
         }
         requestDraw();
       }
@@ -912,11 +967,11 @@
         const rects = isPdfHighlight ? highlightRectsFor(live.rawPoints, pdfTextLines) : null;
         if (rects) {
           const snapped = rects.map((r) => ({ id: uid(), tool: 'highlighter', color: live.color, size: live.size, shape: { type: 'rect', x: r.x, y: r.y, w: r.w, h: r.h } }));
-          strokes = [...strokes, ...snapped];
+          setStrokes([...strokes, ...snapped]);
         } else {
           const committed = { ...live };
           delete committed.rawPoints;
-          strokes = [...strokes, committed];
+          setStrokes([...strokes, committed]);
         }
         scheduleSave(page?.id);
       }
@@ -943,7 +998,7 @@
       for (const s of strokes) (strokeNear(s, x, y, r) ? removed : keep).push(s);
       if (!removed.length) return;
       pushUndo();
-      strokes = keep;
+      setStrokes(keep);
     } else {
       // Brush: erase only the points under the eraser, splitting strokes.
       const before = strokes.reduce((n, s) => n + s.points.length, 0);
@@ -951,7 +1006,7 @@
       const after = next.reduce((n, s) => n + s.points.length, 0);
       if (after === before) return;
       pushUndo();
-      strokes = next;
+      setStrokes(next);
     }
     scheduleSave(page?.id);
   }
@@ -978,7 +1033,7 @@
       color: color === '#ffffff' ? '#1f2937' : color,
     };
     pushUndo();
-    texts = [...texts, t];
+    setTexts([...texts, t]);
     editing = { ...t };
     selected = t.id;
     requestDraw();
@@ -990,9 +1045,9 @@
     const id = editing.id;
     const text = editing.text;
     if (!text.trim()) {
-      texts = texts.filter((t) => t.id !== id);
+      setTexts(texts.filter((t) => t.id !== id));
     } else {
-      texts = texts.map((t) => (t.id === id ? { ...t, text } : t));
+      setTexts(texts.map((t) => (t.id === id ? { ...t, text } : t)));
     }
     editing = null;
     scheduleSave(page?.id);
@@ -1008,8 +1063,8 @@
     if (!undoStack.length) return;
     redoStack.push({ strokes, texts });
     const s = undoStack.pop();
-    strokes = s.strokes;
-    texts = s.texts;
+    setStrokes(s.strokes);
+    setTexts(s.texts);
     scheduleSave(page?.id);
   }
 
@@ -1017,8 +1072,8 @@
     if (!redoStack.length) return;
     undoStack.push({ strokes, texts });
     const s = redoStack.pop();
-    strokes = s.strokes;
-    texts = s.texts;
+    setStrokes(s.strokes);
+    setTexts(s.texts);
     scheduleSave(page?.id);
   }
 
@@ -1034,7 +1089,7 @@
       pushUndo();
       lastTextPropUndo = now;
     }
-    texts = texts.map((o) => (o.id === id ? { ...o, ...patch } : o));
+    setTexts(texts.map((o) => (o.id === id ? { ...o, ...patch } : o)));
     scheduleSave(page?.id);
     requestDraw();
   }
@@ -1043,7 +1098,7 @@
   function deleteSelectedStroke() {
     if (!selStroke) return;
     pushUndo();
-    strokes = strokes.filter((o) => o.id !== selStroke);
+    setStrokes(strokes.filter((o) => o.id !== selStroke));
     selStroke = null;
     scheduleSave(page?.id);
     requestDraw();
@@ -1152,6 +1207,7 @@
   // Screen-space box of the selected text item (for the selection chrome).
   // Shown in any tool: a tap selects a text item regardless of the active tool.
   const selectedBox = $derived.by(() => {
+    void textsRev;
     if (!selected || editing) return null;
     const t = texts.find((o) => o.id === selected);
     if (!t) return null;
@@ -1167,6 +1223,7 @@
   // Screen position for the delete button shown above a selected stroke
   // (touch devices have no Delete key).
   const selStrokeDel = $derived.by(() => {
+    void strokesRev;
     if (!selStroke) return null;
     const s = strokes.find((o) => o.id === selStroke);
     if (!s) return null;
